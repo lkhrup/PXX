@@ -1,0 +1,7 @@
+# ProXy vote eXtractor
+
+## Install requirements
+
+```sh
+pip install requests html2text pysqlite3
+```
