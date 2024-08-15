@@ -235,12 +235,10 @@ def split_blocks(lines):
     lines = lines[start:]
     return split_blocks_indentation(lines)
 
-# Extract blocks mentioning 'TESLA'
+
+# Extract relevant blocks
 for filename in os.listdir('filings'):
     if filename.endswith('.txt'):
-
-        # Get CIK before first '-' in filename
-        cik = filename.split('-')[0]
 
         with open(os.path.join('filings', filename), 'r') as f:
             data = f.read()
@@ -248,14 +246,12 @@ for filename in os.listdir('filings'):
 
         blocks = split_blocks(lines)
 
-        index = 1
+        relevant_blocks = []
         for block in blocks:
             block_upper = block.upper()
             if 'TSLA' in block_upper or 'TESLA' in block_upper:
-                with open(os.path.join('blocks', f"{cik}-{index}.txt"), 'w') as f:
-                    f.write(block)
-                index += 1
-        if index == 1:
-            print(f"Warning: no blocks found in {filename}")
-
-# TODO: analyze blocks
+                relevant_blocks.append(block)
+        if len(relevant_blocks) == 0:
+            print(f"Warning: no relevant blocks found in {filename}")
+        with open(os.path.join('blocks', filename), 'w') as f:
+            f.write('\n---\n'.join(relevant_blocks))
