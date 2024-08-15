@@ -103,10 +103,10 @@ if not offline:
             if os.stat(filename).st_size < 400:
                 print(f"File {filename} is too small, deleting it")
                 os.remove(filename)
-        if total_hits <= page*100:
+        cursor += len(data['hits']['hits'])
+        if cursor >= total_hits:
             break
         page += 1
-        cursor += len(data['hits']['hits'])
     conn.commit()
     session.close()
 
