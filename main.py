@@ -1,6 +1,6 @@
 import requests
 import os
-from bs4 import BeautifulSoup
+import html2text
 import pysqlite3
 
 year = 2018
@@ -121,8 +121,8 @@ for filename in os.listdir('filings'):
             continue
         else:
             print(f"Converting {filename} to {txt_filename}")
-            soup = BeautifulSoup(data, 'html.parser')
-            data = soup.get_text()
+            h = html2text.HTML2Text()
+            data = h.handle(data)
             with open(os.path.join('data', txt_filename), 'w') as f:
                 f.write(data)
 
