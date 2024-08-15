@@ -123,7 +123,7 @@ for filename in os.listdir('filings'):
             print(f"Converting {filename} to {txt_filename}")
             h = html2text.HTML2Text()
             data = h.handle(data)
-            with open(os.path.join('data', txt_filename), 'w') as f:
+            with open(os.path.join('filings', txt_filename), 'w') as f:
                 f.write(data)
 
 # Extract blocks mentioning 'TESLA'
