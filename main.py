@@ -42,10 +42,11 @@ headers = {
 }
 # curl 'https://efts.sec.gov/LATEST/search-index?q=Tesla&dateRange=custom&category=custom&startdt=2018-08-15&enddt=2019-01-01&forms=N-PX&page=3&from=200'
 page = 1
+cursor = 0
 while True:
     print(f"Downloading page {page}")
     resp = session.get(
-        f'https://efts.sec.gov/LATEST/search-index?q=Tesla&dateRange=custom&category=custom&startdt={year}-01-01&enddt={year+1}-01-01&forms=N-PX&page={page}&from={page*100}',
+        f'https://efts.sec.gov/LATEST/search-index?q=Tesla&dateRange=custom&category=custom&startdt={year}-01-01&enddt={year+1}-01-01&forms=N-PX&page={page}&from={cursor}',
         headers=headers)
     data = resp.json()
     total_hits = data['hits']['total']['value']
@@ -103,6 +104,8 @@ while True:
     if total_hits <= page*100:
         break
     page += 1
+    cursor += len(data['hits']['hits'])
+conn.commit()
 session.close()
 
 # Convert filings to text
