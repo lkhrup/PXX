@@ -4,7 +4,7 @@ import html2text
 import pysqlite3
 
 year = 2018
-offline = False
+offline = True
 
 # Create SQLite database
 conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
@@ -132,24 +132,25 @@ for filename in os.listdir('filings'):
             data = f.read()
         # Get CIK before first '-' in filename
         cik = filename.split('-')[0]
-        # Find blocks (delimited by lines starting with '---')
+        # Find blocks (delimited by lines containing '---')
         blocks = []
         block = []
         for line in data.split('\n'):
-            if line.startswith('---'):
+            if '---' in line:
                 if block:
-                    blocks.append(block)
+                    blocks.append('\n'.join(block))
                 block = []
             else:
                 block.append(line)
         if block:
-            blocks.append(block)
+            blocks.append('\n'.join(block))
         index = 1
         for block in blocks:
-            block_text = '\n'.join(block)
-            if 'TESLA' in block_text:
+            if 'TSLA' in block or 'TESLA' in block:
                 with open(os.path.join('blocks', f"{cik}-{index}.txt"), 'w') as f:
-                    f.write(block_text)
+                    f.write(block)
                 index += 1
+        if index == 1:
+            print(f"Warning: no blocks found in {filename}")
 
 # TODO: analyze blocks
