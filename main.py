@@ -4,16 +4,19 @@ import html2text
 import pysqlite3
 
 year = 2018
-offline = True
+offline = False
 
 # Create SQLite database
 conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
 conn.row_factory = pysqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS filings (
-    cik TEXT PRIMARY KEY,
+    url TEXT PRIMARY KEY,
+    filename TEXT,
+    file_date TEXT,
+    cik TEXT,
     display_name TEXT,
-    filename TEXT
+    prop1 TEXT
 );
 """)
 conn.commit()
@@ -77,31 +80,42 @@ if not offline:
         for hit in data['hits']['hits']:
             display_names = ", ".join(hit['_source']['display_names'])
             cik = hit['_source']['ciks'][0]
+            file_date = hit['_source']['file_date']
             print(f"Hit: {display_names} (CIK={cik}, id={hit['_id']})")
             id = hit['_id']
             # 0001104659-18-053437:a18-15410_5npx.htm -> 000110465918053437/a18-15410_5npx.htm
             id1, id2 = id.split(':')
             id1 = id1.replace('-', '')
             url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{id1}/{id2}"
-            filename = os.path.join("filings", f"{cik}-{id}".replace('/', '-'))
-            conn.execute(
-                "INSERT OR REPLACE INTO filings (cik, display_name, filename) VALUES (?, ?, ?)",
-                (cik, display_names, filename)
-            )
-            if os.path.exists(filename):
-                print(f"Skipping {filename}")
+            filename = f"{cik}-{id}".replace('/', '-')
+            filepath = os.path.join("filings", filename)
+            # Find the row by filename
+            cu = conn.cursor()
+            cu.execute("SELECT * FROM filings WHERE url = ?", (url,))
+            if cu.fetchone():
+                print(f"Updating {filename}")
+                conn.execute(
+                    "UPDATE filings SET filename = ?, cik = ?, display_name = ?, file_date = ? WHERE url = ?",
+                    (filename, cik, display_names, file_date, url)
+                )
             else:
-                print(f"Downloading {url} to {filename}")
+                conn.execute(
+                    "INSERT INTO filings (url, filename, cik, display_name, file_date) VALUES (?, ?, ?, ?, ?)",
+                    (url, filename, cik, display_names, file_date)
+                )
+            cu.close()
+            if not os.path.exists(filepath):
+                print(f"Downloading {url} to {filepath}")
                 data = session.get(url, headers=headers)
                 if data.status_code != 200:
                     print(f"Failed to download {url}, status code: {data.status_code}")
                     print(hit)
                     continue
-                with open(filename, 'wb') as f:
+                with open(filepath, 'wb') as f:
                     f.write(data.content)
-            if os.stat(filename).st_size < 400:
-                print(f"File {filename} is too small, deleting it")
-                os.remove(filename)
+            if os.stat(filepath).st_size < 400:
+                print(f"File {filepath} is too small, deleting it")
+                os.remove(filepath)
         cursor += len(data['hits']['hits'])
         if cursor >= total_hits:
             break
