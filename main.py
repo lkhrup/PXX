@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS filings (
 conn.commit()
 
 # Prepare directories
-os.makedirs('pages', exist_ok=True)
 os.makedirs('filings', exist_ok=True)
 os.makedirs('blocks', exist_ok=True)
 
