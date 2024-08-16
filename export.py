@@ -20,4 +20,4 @@ for row in conn.execute("""
     vote = row['vote']
     url = row['url']
     ticker_symbol = row['ticker_symbol']
-    print(f'{file_date},"{display_name}",{fund},{ticker_symbol},{vote},"{url}"')
+    print(f'{file_date},"{display_name}",{fund},"{ticker_symbol}",{vote},"{url}"')
