@@ -439,8 +439,8 @@ def split_filing(filename, output_filename):
 
 def split_filings():
     for filename in os.listdir('filings'):
-        if filename == "0001432353-0001135428-18-000216.txt":
-            # Bad block splitting
+        if filename == "0001066241-0001162044-18-000507.txt":
+            # Bad block splitting, tabular
             continue
         if filename.endswith('.txt'):
             output_filename = os.path.join('blocks', filename)
