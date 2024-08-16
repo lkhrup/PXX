@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS votes (
     url TEXT,
     fund TEXT,
     ticker_symbol TEXT,
+    fund_strategy TEXT,
     fund_line TEXT,
     block_text TEXT,
     vote TEXT
@@ -49,31 +50,38 @@ def analyze_blocks(row):
     for block in blocks:
         fund = block['fund']
         # If fund is an array (not a string), it is an array (fund, ticker_symbol)
+        fund_strategy = None
         ticker_symbol = None
         if isinstance(fund, list):
-            fund, ticker_symbol = fund
+            if len(fund) == 2:
+                fund, ticker_symbol = fund
+            elif len(fund) == 3:
+                fund_strategy, fund, ticker_symbol = fund
+            else:
+                print(f"Warning: unexpected fund format {fund}")
         fund_line = block['fund_line']
         text_blocks = block['blocks']  # Array of array of lines
-        block_text = "\n".join(["\n".join(lines) for lines in text_blocks])
-        content = prompt_prefix + "\n" + block_text + "\n" + prompt_suffix
-        response = client.chat(model='llama3:70b', messages=[
-            {
-                'role': 'user',
-                'content': content,
-            },
-        ])
-        vote = response['message']['content']
-        print(f"{fund}: {vote}")
-        vote = vote.lower().strip()
-        if len(vote) > 7:
-            vote = 'confused'
-        # Validate and store vote
-        if vote in ['for', 'against', 'none']:
-            conn.execute("""
-                INSERT OR REPLACE INTO votes (key, url, fund, ticker_symbol, fund_line, block_text, vote)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (f"{cik} {fund}", url, fund, ticker_symbol, fund_line, block_text, vote))
-            conn.commit()
+        for lines in text_blocks:
+            block_text = "\n".join(lines)
+            content = prompt_prefix + "\n" + block_text + "\n" + prompt_suffix
+            response = client.chat(model='llama3:70b', messages=[
+                {
+                    'role': 'user',
+                    'content': content,
+                },
+            ])
+            vote = response['message']['content']
+            print(f"{fund}: {vote}")
+            vote = vote.lower().strip()
+            if len(vote) > 7:
+                vote = 'confused'
+            # Validate and store vote
+            if vote in ['for', 'against']:
+                conn.execute("""
+                    INSERT OR REPLACE INTO votes (key, url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (f"{cik} {fund}", url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote))
+                conn.commit()
 
 
 # For every filing in sqlite:
