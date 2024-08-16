@@ -7,14 +7,17 @@ year = 2018
 conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
 conn.row_factory = pysqlite3.Row
 
-print("File date,Filing entity/person,Prop 1 vote,URL")
+print("File date,Filing entity/person,Fund,Ticker,Vote,URL")
 # Export each filing in CSV format
-for row in conn.execute('SELECT * FROM filings ORDER BY cik, file_date'):
-    file_date = row['file_date']
+for row in conn.execute("""
+    SELECT * FROM votes v, filings f
+    WHERE v.url = f.url ORDER BY vote, cik, file_date, fund;
+"""):
     cik = row['cik']
     display_name = row['display_name']
-    prop1 = row['prop1']
-    if prop1 is None:
-        prop1 = "unknown"
+    file_date = row['file_date']
+    fund = row['fund']
+    vote = row['vote']
     url = row['url']
-    print(f'{file_date},"{display_name}",{prop1},"{url}"')
+    ticker_symbol = row['ticker_symbol']
+    print(f'{file_date},"{display_name}",{fund},{ticker_symbol},{vote},"{url}"')
