@@ -365,7 +365,7 @@ def split_sections(series, filing):
             print(f"Fund line: {fund_line}")
             section_blocks = blocks[block_index:section_end + 1]
             print(json.dumps(section_blocks, indent=2))
-            sections.append({'fund': fund, 'blocks': section_blocks})
+            sections.append({'fund': fund, 'fund_line': fund_line, 'blocks': section_blocks})
     return sections
 
 
@@ -444,6 +444,7 @@ def split_filings():
             continue
         if filename.endswith('.txt'):
             output_filename = os.path.join('blocks', filename)
+            output_filename = output_filename.replace('.txt', '.json')
             if os.path.exists(output_filename):
                 print(f"Skipping {filename}")
             else:
