@@ -42,40 +42,40 @@ def match_fund(series, title):
     item_index = title.find('ITEM ')
     if item_index > 0: # filings/0001123460-0001580642-18-003631.txt
         title = title[:item_index].strip()
-    if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
-        # Fast path, also catches some funds for which there is no <SERIES-NAME> line
-        return title
     for fund, ticker_symbol in series:
         if title == fund:
-            return fund
+            return fund, ticker_symbol
         if fund.startswith(title) and title+' FUND' == fund:  # 0000814680-0000814680-18-000120.txt
-            return fund
+            return fund, ticker_symbol
         if title == ticker_symbol:  # filings/0001551030-0001438934-18-000195.txt
-            return fund
+            return fund, ticker_symbol
     if '-' in title:
         parts = title.split('-')
         for part in parts:
             part_stripped = part.strip()
-            for fund, _ in series:
+            for fund, ticker_symbol in series:
                 if part_stripped == fund:
-                    return part_stripped
+                    return fund, ticker_symbol
     # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
     space_index = title.find(' ')
     if space_index > 0:
         title1 = title[space_index + 1:]
-        for fund, _ in series:
+        for fund, ticker_symbol in series:
             if title1 == fund:
-                return title
+                return fund, ticker_symbol
     # Try matching the start or end of the title
-    for fund, _ in series:
+    for fund, ticker_symbol in series:
         if fund.endswith(' ' + title):
-            return fund
+            return fund, ticker_symbol
         if title.startswith(fund + ' '):
-            return fund
+            return fund, ticker_symbol
     if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
-        for fund, _ in series:
+        for fund, ticker_symbol in series:
             if fund[:30] == title:
-                return fund
+                return fund, ticker_symbol
+    if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
+        # Fast path, also catches some funds for which there is no <SERIES-NAME> line
+        return title
     return None
 
 
@@ -383,16 +383,16 @@ def split_filing(filename, output_filename):
     series = []
     preamble_lines = preamble.split('\n')
     fund = None
-    ticker_symbol = None
+    ticker_symbols = []
     for line in preamble_lines:
         if line.startswith('<SERIES-NAME>'):
             fund = normalize_fund(line[13:])
-        if 'TICKER-SYMBOL>' in line:
-            ticker_symbol = line.split('>')[1].strip()
+        if line.startswith('<CLASS-CONTRACT-TICKER-SYMBOL>'):
+            ticker_symbols.append(line.split('>')[1].strip())
         if line.startswith('</SERIES>'):
-            series.append((fund, ticker_symbol))
+            series.append((fund, ", ".join(ticker_symbols)))
             fund = None
-            ticker_symbol = None
+            ticker_symbols = []
     if not series:
         for line in preamble_lines:
             if "COMPANY CONFORMED NAME:" in line:  # 0001298699-0001193125-18-252336.txt
