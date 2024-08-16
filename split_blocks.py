@@ -5,6 +5,9 @@ import sys
 import html2text
 
 
+os.makedirs('temp', exist_ok=True)
+
+
 def normalize_fund(fund):
     fund = fund.upper()
     fund = fund.replace(',', '')
@@ -14,6 +17,7 @@ def normalize_fund(fund):
     fund = fund.replace('=', '')
     fund = fund.replace('  ', ' ')
     fund = fund.replace(' & ', ' AND ')  # filings/0001331971-0001438934-18-000424.txt
+    fund = fund.replace('(R)', '')  # filings/0001131042-0000894189-18-005019.txt
     fund = fund.replace(' :', ':')
     fund = fund.strip()
     if fund.startswith("FUND:"):
@@ -38,11 +42,13 @@ def match_fund(series, title):
     item_index = title.find('ITEM ')
     if item_index > 0: # filings/0001123460-0001580642-18-003631.txt
         title = title[:item_index].strip()
-    if title.endswith(' FUND') or title.endswith(' ETF'):
+    if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
         # Fast path, also catches some funds for which there is no <SERIES-NAME> line
         return title
     for fund, ticker_symbol in series:
         if title == fund:
+            return fund
+        if fund.startswith(title) and title+' FUND' == fund:  # 0000814680-0000814680-18-000120.txt
             return fund
         if title == ticker_symbol:  # filings/0001551030-0001438934-18-000195.txt
             return fund
@@ -74,6 +80,9 @@ def match_fund(series, title):
 
 
 def normalize_security(security):
+    print("Literal: " + security)
+    if security.startswith('| '):
+        security = security[2:]
     security = security.strip().upper()
     tab_index = security.find('    ')
     if tab_index > 0:
@@ -84,6 +93,10 @@ def normalize_security(security):
     pipe_index = security.find('|')
     if pipe_index > 0:
         security = security[:pipe_index]  # 0001535538-0001535538-18-000053.txt
+    meeting_date_index = security.find(' MEETING DATE:')
+    if meeting_date_index > 0:
+        security = security[:meeting_date_index]  # 0000814680-0000814680-18-000120.txt
+    print("Normalized: " + security)
     return security
 
 
@@ -293,7 +306,7 @@ def split_sections(series, filing):
     lines = filing.split('\n')
     blocks = split_blocks(lines)
     print(f"Found {len(blocks)} blocks")
-    # print(json.dumps(blocks, indent=2))
+    print(json.dumps(blocks, indent=2))
     sections = []
     section_end = -1
     for block_index in range(len(blocks)):
@@ -322,11 +335,11 @@ def split_sections(series, filing):
                     print(f"Short block, assuming fund section start")
                     break
                 prev_security = normalize_security(prev_block[needle_index])
-                if not prev_security:
-                    continue  # Skip, 0001121624-0000940394-18-001442.txt
                 if prev_security == '<PAGE>':
                     was_page = True
                     continue  # Skip, 0001573386-0001135428-18-000263.txt
+                if prev_security.startswith('('):  # 0000067160-0001144204-18-047049.txt
+                    break
                 print(f"prev security: {prev_security}")
                 current_security = compare_securities(prev_security, current_security)
                 print(f"next security: {current_security}")
@@ -392,23 +405,30 @@ def split_filing(filename, output_filename):
         fund = 'SPDR MSCI ACWI IMI ETF'  # Not in preamble, 0001168164-0001193125-18-263578.txt
         series.append((normalize_fund(fund), None))
 
-    # VT NASDAQ-100 2X STRATEGY FUND
     print("Series:")
     for s in series:
         print(f"  {s}")
+
     # Detect html filing and convert to text
     filing = filing.strip()
     first_line_end = filing.find('\n')
     first_line = filing[:first_line_end].lower()
     if first_line.startswith('<html>') or first_line.startswith('<!doctype html'):
-        print("Converting HTML filing")
-        h = html2text.HTML2Text()
-        h.body_width = 0  # Disable line wrapping -- 0001314414-0001580642-18-003578.txt
-        h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
-        filing = h.handle(filing)
-        # Write to a temporary file
-        with open('temp.txt', 'w') as f:
-            f.write(filing)
+        temp_file = os.path.join('temp', filename)
+        if os.path.exists(temp_file):
+            print("Using cached HTML conversion")
+            with open(temp_file, 'r') as f:
+                filing = f.read()
+        else:
+            print("Converting HTML filing")
+            h = html2text.HTML2Text()
+            h.body_width = 0  # Disable line wrapping -- 0001314414-0001580642-18-003578.txt
+            h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
+            filing = h.handle(filing)
+            # Write to a temporary file
+            with open(temp_file, 'w') as f:
+                f.write(filing)
+
     sections = split_sections(series, filing)
     if len(sections) == 0:
         print(f"Warning: no relevant blocks found in {filename}")
