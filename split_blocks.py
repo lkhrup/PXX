@@ -212,6 +212,8 @@ def split_blocks(lines):
         return []
     print("Line  : " + lines[needle_index])
     print("Line+1: " + lines[needle_index + 1])
+    if 'Ticker: ' in lines[needle_index]:
+        return split_blocks_tabular(lines, 'Ticker: ')
     if '|  Security' in lines[needle_index + 1]:
         return split_blocks_tabular(lines, '|  Security')
     if '| **Security**' in lines[needle_index + 1]:
