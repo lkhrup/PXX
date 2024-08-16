@@ -36,6 +36,8 @@ def normalize_fund(fund):
 
 
 def match_fund(series, title):
+    if not title:
+        return None
     print(f"Match fund: {title}")
     if title.startswith('REGISTRANT:'):
         title = title[11:].strip()
@@ -44,38 +46,38 @@ def match_fund(series, title):
         title = title[:item_index].strip()
     for fund, ticker_symbol in series:
         if title == fund:
-            return fund, ticker_symbol
+            return '1', fund, ticker_symbol
         if fund.startswith(title) and title+' FUND' == fund:  # 0000814680-0000814680-18-000120.txt
-            return fund, ticker_symbol
+            return '2', fund, ticker_symbol
         if title == ticker_symbol:  # filings/0001551030-0001438934-18-000195.txt
-            return fund, ticker_symbol
+            return '3', fund, ticker_symbol
     if '-' in title:
         parts = title.split('-')
         for part in parts:
             part_stripped = part.strip()
             for fund, ticker_symbol in series:
                 if part_stripped == fund:
-                    return fund, ticker_symbol
+                    return '4', fund, ticker_symbol
     # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
     space_index = title.find(' ')
     if space_index > 0:
         title1 = title[space_index + 1:]
         for fund, ticker_symbol in series:
             if title1 == fund:
-                return fund, ticker_symbol
+                return '5', fund, ticker_symbol
     # Try matching the start or end of the title
     for fund, ticker_symbol in series:
         if fund.endswith(' ' + title):
-            return fund, ticker_symbol
+            return '6', fund, ticker_symbol
         if title.startswith(fund + ' '):
-            return fund, ticker_symbol
+            return '7', fund, ticker_symbol
     if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
         for fund, ticker_symbol in series:
             if fund[:30] == title:
-                return fund, ticker_symbol
+                return '8', fund, ticker_symbol
     if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
         # Fast path, also catches some funds for which there is no <SERIES-NAME> line
-        return title
+        return '9', title, None
     return None
 
 
