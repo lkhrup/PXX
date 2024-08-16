@@ -5,3 +5,13 @@
 ```sh
 pip install requests html2text pysqlite3
 ```
+
+## How To Use
+
+```sh
+python3 fetch_filings.py
+python3 split_blocks.py
+time OLLAMA_HOST=http://127.0.0.1:11434 python3 analyze_blocks.py
+python3 export.py  > export.csv
+```
+
