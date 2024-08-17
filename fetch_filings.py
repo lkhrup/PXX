@@ -11,6 +11,7 @@ conn.row_factory = sqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS filings (
     url TEXT PRIMARY KEY,
+    num INTEGER,
     filename TEXT,
     file_date TEXT,
     cik TEXT,
@@ -45,6 +46,7 @@ headers = {
 # curl 'https://efts.sec.gov/LATEST/search-index?q=Tesla&dateRange=custom&category=custom&startdt=2018-08-15&enddt=2019-01-01&forms=N-PX&page=3&from=200'
 page = 1
 cursor = 0
+num = 0
 while True:
     print(f"Downloading page {page}")
     resp = session.get(
@@ -52,6 +54,9 @@ while True:
         headers=headers)
     data = resp.json()
     total_hits = data['hits']['total']['value']
+    # Write to "results-{page}.json"
+    with open(f'results-{page}.json', 'w', encoding='utf-8') as f:
+        f.write(resp.text)
     # Elasticsearch results format:
     # {
     #     "hits": {
@@ -77,6 +82,7 @@ while True:
     # }
     # -> curl 'https://www.sec.gov/Archives/edgar/data/916620/000119312518261549/0001193125-18-261549.txt'
     for hit in data['hits']['hits']:
+        num += 1
         display_names = ", ".join(hit['_source']['display_names'])
         cik = hit['_source']['ciks'][0]
         adsh = hit['_source']['adsh']
@@ -93,13 +99,13 @@ while True:
         if cu.fetchone():
             print(f"Updating {filename}")
             conn.execute(
-                "UPDATE filings SET filename = ?, cik = ?, display_name = ?, file_date = ? WHERE url = ?",
-                (filename, cik, display_names, file_date, url)
+                "UPDATE filings SET num = ?, filename = ?, cik = ?, display_name = ?, file_date = ? WHERE url = ?",
+                (num, filename, cik, display_names, file_date, url)
             )
         else:
             conn.execute(
-                "INSERT INTO filings (url, filename, cik, display_name, file_date) VALUES (?, ?, ?, ?, ?)",
-                (url, filename, cik, display_names, file_date)
+                "INSERT INTO filings (url, num, filename, cik, display_name, file_date) VALUES (?, ?, ?, ?, ?)",
+                (url, num, filename, cik, display_names, file_date)
             )
         cu.close()
         if not os.path.exists(filepath):
