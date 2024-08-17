@@ -8,7 +8,7 @@ import html2text
 os.makedirs('temp', exist_ok=True)
 
 
-def normalize_fund(fund):
+def normalize_fund(fund: str) -> str:
     fund = fund.upper()
     fund = fund.replace(',', '')
     fund = fund.replace('.', '')
@@ -44,7 +44,7 @@ def match_fund(series, title):
     item_index = title.find('ITEM ')
     if item_index > 0: # filings/0001123460-0001580642-18-003631.txt
         title = title[:item_index].strip()
-    for fund, ticker_symbol in series:
+    for _, fund, ticker_symbol in series:
         if title == fund:
             return '1', fund, ticker_symbol
         if fund.startswith(title) and title+' FUND' == fund:  # 0000814680-0000814680-18-000120.txt
@@ -55,24 +55,24 @@ def match_fund(series, title):
         parts = title.split('-')
         for part in parts:
             part_stripped = part.strip()
-            for fund, ticker_symbol in series:
+            for _, fund, ticker_symbol in series:
                 if part_stripped == fund:
                     return '4', fund, ticker_symbol
     # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
     space_index = title.find(' ')
     if space_index > 0:
         title1 = title[space_index + 1:]
-        for fund, ticker_symbol in series:
+        for _, fund, ticker_symbol in series:
             if title1 == fund:
                 return '5', fund, ticker_symbol
     # Try matching the start or end of the title
-    for fund, ticker_symbol in series:
+    for _, fund, ticker_symbol in series:
         if fund.endswith(' ' + title):
             return '6', fund, ticker_symbol
         if title.startswith(fund + ' '):
             return '7', fund, ticker_symbol
     if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
-        for fund, ticker_symbol in series:
+        for _, fund, ticker_symbol in series:
             if fund[:30] == title:
                 return '8', fund, ticker_symbol
     if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
@@ -200,9 +200,12 @@ def split_blocks_tabular(lines, marker):
     return blocks
 
 
-def split_blocks(lines):
-    # Find the index of the first line mentioning TSLA or TESLA,
-    # identify the block separator, and split the blocks.
+def split_blocks(lines: list[str]) -> tuple[str, list[list[str]]]:
+    """ Find the index of the first line mentioning the relevant security,
+        identify the block separator, and split the blocks accordingly.
+
+        :returns: the separator type and the blocks.
+    """
     needle_index = 0
     while needle_index < len(lines):
         line = lines[needle_index]
@@ -210,22 +213,22 @@ def split_blocks(lines):
             break
         needle_index += 1
     if needle_index == len(lines):
-        print("No lines mentioning TSLA or TESLA")
-        return []
+        print("No lines mentioning relevant security")
+        return 'none', []
     print("Line  : " + lines[needle_index])
     print("Line+1: " + lines[needle_index + 1])
     if 'Ticker: ' in lines[needle_index]:
-        return split_blocks_tabular(lines, 'Ticker: ')
+        return 'tabular, ticker', split_blocks_tabular(lines, 'Ticker: ')
     if '|  Security' in lines[needle_index + 1]:
-        return split_blocks_tabular(lines, '|  Security')
+        return 'tabular, security1', split_blocks_tabular(lines, '|  Security')
     if '| **Security**' in lines[needle_index + 1]:
-        return split_blocks_tabular(lines, '| **Security**')
+        return 'tabular, security2', split_blocks_tabular(lines, '| **Security**')
     if '---' in lines[needle_index - 1] and '---' in lines[needle_index + 1]:
-        return split_block_double_separator(lines, '---')
+        return 'double_sep, ---', split_block_double_separator(lines, '---')
     if lines[needle_index - 2].startswith('| ** **'):
-        return split_blocks_separator(lines, '| ** **')
+        return 'sep, | ** **', split_blocks_separator(lines, '| ** **')
     if '| F | F' in lines[needle_index]:  # XXX This may be broken due pad_tables=True
-        return lines
+        return 'lines', list(map(lambda x: [x], lines))
 
     sep = None
     for distance in range(1, 25):
@@ -242,9 +245,9 @@ def split_blocks(lines):
             sep = '___'
             break
     if sep is not None:
-        return split_blocks_separator(lines, sep)
+        return f'sep, {sep}', split_blocks_separator(lines, sep)
 
-    return split_blocks_indentation(lines)
+    return 'indentation', split_blocks_indentation(lines)
 
 
 def find_fund_name_in_block(block, series):
@@ -308,7 +311,7 @@ def find_fund_name(blocks, start_index, series):
 
 def split_sections(series, filing):
     lines = filing.split('\n')
-    blocks = split_blocks(lines)
+    method, blocks = split_blocks(lines)
     print(f"Found {len(blocks)} blocks")
     print(json.dumps(blocks, indent=2))
     sections = []
@@ -369,22 +372,19 @@ def split_sections(series, filing):
             print(f"Fund line: {fund_line}")
             section_blocks = blocks[block_index:section_end + 1]
             print(json.dumps(section_blocks, indent=2))
-            sections.append({'fund': fund, 'fund_line': fund_line, 'blocks': section_blocks})
+            sections.append({
+                'fund': fund,
+                'fund_line': fund_line,
+                'blocks': section_blocks,
+                'split_method': method,
+            })
     return sections
 
 
-def split_filing(filename, output_filename):
-    print(f"\n\n\n---------- {filename} ----------\n")
-    with open(os.path.join('filings', filename), 'r', encoding="utf-8") as f:
-        filing = f.read()
-    # Split at the "<TEXT>" line
-    parts = filing.split('<TEXT>\n')
-    preamble = parts[0]
-    filing = parts[1]
-    if len(parts) > 2:
-        print("Warning: multiple <TEXT> sections")
+def extract_series(preamble: str) -> list[tuple[str, str, str]]:
     # From the preample, extract <SERIES-NAME> lines
     series = []
+
     preamble_lines = preamble.split('\n')
     fund = None
     ticker_symbols = []
@@ -394,26 +394,28 @@ def split_filing(filename, output_filename):
         if line.startswith('<CLASS-CONTRACT-TICKER-SYMBOL>'):
             ticker_symbols.append(line.split('>')[1].strip())
         if line.startswith('</SERIES>'):
-            series.append((fund, ", ".join(ticker_symbols)))
+            if fund is not None:
+                series.append(('0', fund, ", ".join(ticker_symbols)))
             fund = None
             ticker_symbols = []
+
     if not series:
         for line in preamble_lines:
             if "COMPANY CONFORMED NAME:" in line:  # 0001298699-0001193125-18-252336.txt
                 fund = line.split(':')[1].strip()
-                series.append((normalize_fund(fund), None))
-    if ('SPROTT GOLD MINERS ETF', 'SGDM') in series:
+                series.append(('0', normalize_fund(fund), ""))
+
+    if ('0', 'SPROTT GOLD MINERS ETF', 'SGDM') in series:
         fund = 'Sprott Buzz Social Media Insights ETF'  # Not in preamble, 0001414040-0001387131-18-003632.txt
-        series.append((normalize_fund(fund), None))
-    if ('SPDR MSCI WORLD STRATEGICFACTORS ETF', 'QWLD') in series:
+        series.append(('0.1', normalize_fund(fund), ""))
+    if ('0', 'SPDR MSCI WORLD STRATEGICFACTORS ETF', 'QWLD') in series:
         fund = 'SPDR MSCI ACWI IMI ETF'  # Not in preamble, 0001168164-0001193125-18-263578.txt
-        series.append((normalize_fund(fund), None))
+        series.append(('0.2', normalize_fund(fund), ""))
 
-    print("Series:")
-    for s in series:
-        print(f"  {s}")
+    return series
 
-    # Detect html filing and convert to text
+
+def ensure_text_filing(filename: str, filing: str) -> str:
     filing = filing.strip()
     first_line_end = filing.find('\n')
     first_line = filing[:first_line_end].lower()
@@ -432,7 +434,31 @@ def split_filing(filename, output_filename):
             # Write to a temporary file
             with open(temp_file, 'w', encoding="utf-8") as f:
                 f.write(filing)
+    return filing
 
+
+def split_filing(filename, output_filename):
+    print(f"\n\n\n---------- {filename} ----------\n")
+    with open(os.path.join('filings', filename), 'r', encoding="utf-8") as f:
+        filing = f.read()
+
+    # Split at the "<TEXT>" line
+    parts = filing.split('<TEXT>\n')
+    preamble = parts[0]
+    filing = parts[1]
+    if len(parts) > 2:
+        print("Warning: multiple <TEXT> sections")
+
+    # Extract series from preamble
+    series = extract_series(preamble)
+    print("Series:")
+    for s in series:
+        print(f"  {s}")
+
+    # Detect html filing and convert to text
+    filing = ensure_text_filing(filename, filing)
+
+    # Split filing into sections, write out blocks as JSON
     sections = split_sections(series, filing)
     if len(sections) == 0:
         print(f"Warning: no relevant blocks found in {filename}")
