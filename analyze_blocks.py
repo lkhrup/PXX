@@ -4,11 +4,13 @@ from ollama import Client
 import pysqlite3
 
 year = 2018
+model = 'llama3:70b'
+# model = 'mixtral:8x7b' # much worse than llama3:70b
 conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
 conn.row_factory = pysqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS votes (
-    key TEXT PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     url TEXT,
     fund TEXT,
     ticker_symbol TEXT,
@@ -44,7 +46,7 @@ def analyze_blocks(row):
     filename = row['filename']
     filename = filename.replace('.htm', '.txt')
     filename = filename.replace('.txt', '.json')
-    with open(f'blocks/{filename}') as f:
+    with open(f'blocks/{filename}', 'r', encoding="utf-8") as f:
         blocks = json.loads(f.read())
     print(filename)
     for block in blocks:
@@ -64,7 +66,7 @@ def analyze_blocks(row):
         for lines in text_blocks:
             block_text = "\n".join(lines)
             content = prompt_prefix + "\n" + block_text + "\n" + prompt_suffix
-            response = client.chat(model='llama3:70b', messages=[
+            response = client.chat(model=model, messages=[
                 {
                     'role': 'user',
                     'content': content,
@@ -72,15 +74,15 @@ def analyze_blocks(row):
             ])
             vote = response['message']['content']
             print(f"{fund}: {vote}")
+            if '.' in vote:
+                vote = vote.split('.')[0]
             vote = vote.lower().strip()
-            if len(vote) > 7:
-                vote = 'confused'
             # Validate and store vote
             if vote in ['for', 'against']:
                 conn.execute("""
-                    INSERT OR REPLACE INTO votes (key, url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (f"{cik} {fund}", url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote))
+                    INSERT INTO votes (url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote))
                 conn.commit()
 
 
