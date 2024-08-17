@@ -1,13 +1,13 @@
 import os
 
-import pysqlite3
+import sqlite3
 import requests
 
 year = 2018
 
 # Create SQLite database
-conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
-conn.row_factory = pysqlite3.Row
+conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
+conn.row_factory = sqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS filings (
     url TEXT PRIMARY KEY,

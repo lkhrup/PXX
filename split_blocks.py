@@ -375,7 +375,7 @@ def split_sections(series, filing):
 
 def split_filing(filename, output_filename):
     print(f"\n\n\n---------- {filename} ----------\n")
-    with open(os.path.join('filings', filename), 'r') as f:
+    with open(os.path.join('filings', filename), 'r', encoding="utf-8") as f:
         filing = f.read()
     # Split at the "<TEXT>" line
     parts = filing.split('<TEXT>\n')
@@ -421,7 +421,7 @@ def split_filing(filename, output_filename):
         temp_file = os.path.join('temp', filename)
         if os.path.exists(temp_file):
             print("Using cached HTML conversion")
-            with open(temp_file, 'r') as f:
+            with open(temp_file, 'r', encoding="utf-8") as f:
                 filing = f.read()
         else:
             print("Converting HTML filing")
@@ -430,14 +430,14 @@ def split_filing(filename, output_filename):
             h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
             filing = h.handle(filing)
             # Write to a temporary file
-            with open(temp_file, 'w') as f:
+            with open(temp_file, 'w', encoding="utf-8") as f:
                 f.write(filing)
 
     sections = split_sections(series, filing)
     if len(sections) == 0:
         print(f"Warning: no relevant blocks found in {filename}")
         exit(1)
-    with open(output_filename, 'w') as f:
+    with open(output_filename, 'w', encoding="utf-8") as f:
         f.write(json.dumps(sections, indent=2))
 
 
