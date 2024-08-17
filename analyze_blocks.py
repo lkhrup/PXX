@@ -1,13 +1,13 @@
 import os
 import json
 from ollama import Client
-import pysqlite3
+import sqlite3
 
 year = 2018
 model = 'llama3:70b'
 # model = 'mixtral:8x7b' # much worse than llama3:70b
-conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
-conn.row_factory = pysqlite3.Row
+conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
+conn.row_factory = sqlite3.Row
 conn.execute("""
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
@@ -43,6 +43,7 @@ prompt_suffix = """
 """.strip()
 
 client = Client(host=os.environ.get('OLLAMA_HOST', 'http://127.0.0.1:11434'))
+
 
 def analyze_blocks(row):
     url = row['url']

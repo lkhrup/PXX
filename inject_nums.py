@@ -1,12 +1,12 @@
 import os
 import json
-import pysqlite3
+import sqlite3
 
 year = 2018
 
 # Open SQLite database
-conn = pysqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
-conn.row_factory = pysqlite3.Row
+conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
+conn.row_factory = sqlite3.Row
 
 # Load the the cik -> num map.
 with open(f'{year}-nums.json', 'r', encoding="utf-8") as f:
