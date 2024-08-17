@@ -25,12 +25,16 @@ conn.commit()
 prompt_prefix = """
 Instructions:
 From the input, extract the vote cast on TESLA, INC (ticker TSLA) issue/proposal number 1 at the 21-Mar-18 special meeting.
-Issue 1 is titled "Approve Grant of Performance-Based Stock Option Award" but another phrasing such as "Approve Stock Option Grant to Elon Musk" or "Approval of Performance Stock Option Agreement" may be used.
+Issue 1 can be identified with one of these phrasings (or variations thereof):
+- Approval of Performance Stock Option Agreement,
+- Approve Grant of Performance-Based Stock Option Award,
+- Approve Stock Option Grant to Elon Musk.
 Consider only the issue mentioned, disregard any other issues in the input.
-Consider only the actual vote, ignore the Management Recommendation (which is For in this case). For example, if you see "Mgt Rec Vote Cast" in the input, then pick the second vote mentioned (so "For Against" would be Against, not For). The text may be preformatted, so keeping track of column alignments may help.
-Your response imperatively must always be a single word, do not explain your reasoning. I will ask for clarification if needed.
-Your response must be "None" if the input does not include a vote on the specific issue mentioned (incorrect meeting date, security not mentioned).
-You can say "Confused" if you are confused by the input.
+Consider only the actual vote, ignore the Management Recommendation (which is For on this issue).
+For example, if you see "Mgt Rec Vote Cast" in the input, then "For Against" on the next line would mean Mgt Rec = For, Vote Cast = Against.
+The text may be preformatted, so keeping track of column alignments may help.
+Your response must be a single word, do not explain your reasoning. I will ask for details if needed.
+Your response must be "None" if the input does not include a vote on the specific issue mentioned (Did Not Vote, incorrect meeting date, security not mentioned).
 If you are certain you identify the vote correctly, then say "For" or "Against" accordingly.
 
 Input:
