@@ -3,7 +3,7 @@
 ## Install requirements
 
 ```sh
-pip install requests
+pip install requests lxml
 ```
 
 ## How To Use

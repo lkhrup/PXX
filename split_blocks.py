@@ -6,6 +6,7 @@ import sys
 from html_to_plain import html_to_plain
 
 os.makedirs('plain', exist_ok=True)
+os.makedirs('blocks', exist_ok=True)
 
 
 def custom_serializer(obj):
