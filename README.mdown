@@ -14,3 +14,14 @@ python3 split_blocks.py
 time OLLAMA_HOST=http://127.0.0.1:11434 python3 analyze_blocks.py
 python3 export.py > export.csv
 ```
+
+## Approach
+
+Outline:
+
+1. Fetch all filings from the SEC website, saving filing metatat in a database.
+2. Split the filings (converted to plain text) into blocks mentioning the security of interest;
+   for each block, we identify the fund by going backwards in the text until we find a fund name.
+3. Analyze the blocks using an LLM (ollama server, llama3:70B),
+   and inject votes into the database.
+4. Export the results to a CSV file

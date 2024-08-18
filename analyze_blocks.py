@@ -1,7 +1,7 @@
-import os
 import json
-from ollama import Client
+import os
 import sqlite3
+from ollama import Client
 
 year = 2018
 model = 'llama3:70b'
@@ -12,11 +12,16 @@ conn.execute("""
 CREATE TABLE IF NOT EXISTS votes (
     id SERIAL PRIMARY KEY,
     url TEXT,
-    fund TEXT,
-    ticker_symbol TEXT,
-    fund_strategy TEXT,
-    fund_line TEXT,
+    
+    split_method TEXT,
+    block_start TEXT,
     block_text TEXT,
+    
+    fund_method TEXT,
+    fund_name TEXT,
+    ticker_symbol TEXT,
+    fund_line TEXT,
+    
     vote TEXT
 );
 """)
@@ -32,10 +37,11 @@ Issue 1 can be identified with one of these phrasings (or variations thereof):
 Consider only the issue mentioned, disregard any other issues in the input.
 Consider only the actual vote, ignore the Management Recommendation (which is For on this issue).
 For example, if you see "Mgt Rec Vote Cast" in the input, then "For Against" on the next line would mean Mgt Rec = For, Vote Cast = Against.
-The text may be preformatted, so keeping track of column alignments may help.
-Your response must be a single word, do not explain your reasoning. I will ask for details if needed.
-Your response must be "None" if the input does not include a vote on the specific issue mentioned (Did Not Vote, incorrect meeting date, security not mentioned).
-If you are certain you identify the vote correctly, then say "For" or "Against" accordingly.
+The text may be preformatted and keeping track of column alignments may help. Columns may be separated with the '|' character.
+Your response must be "None" if the input does not include a definite vote on the relevant issue (Did Not Vote, incorrect meeting date, irrelevant security).
+Otherwise, your response must be a single word, "For" or "Against".
+For example "For 7:13" means "For" on line 7, column 13.
+Do not explain your reasoning.
 
 Input:
 """.strip()
@@ -54,23 +60,21 @@ def analyze_blocks(row):
     with open(f'blocks/{filename}', 'r', encoding="utf-8") as f:
         blocks = json.loads(f.read())
     print(filename)
-    for block in blocks:
-        fund = block['fund']
-        # If fund is an array (not a string), it is an array (fund, ticker_symbol)
-        fund_strategy = None
-        ticker_symbol = None
-        if isinstance(fund, list):
-            if len(fund) == 2:
-                fund, ticker_symbol = fund
-            elif len(fund) == 3:
-                fund_strategy, fund, ticker_symbol = fund
-            else:
-                print(f"Warning: unexpected fund format {fund}")
-        fund_line = block['fund_line']
-        text_blocks = block['blocks']  # Array of array of lines
-        for lines in text_blocks:
-            block_text = "\n".join(lines)
+    for fund_block in blocks:
+        fund = fund_block['fund']
+        fund_name = fund['name']
+        ticker_symbols = fund['ticker_symbols']
+        fund_method = fund_block['fund_method']
+        fund_text_matched = fund_block['fund_text_matched']
+        split_method = fund_block['split_method']
+        text_blocks = fund_block['blocks']
+        for block in text_blocks:
+            block_start = block['start']
+            block_text = "\n".join(block['lines'])
+            # block_text = re.sub(' +', ' ', block_text)  # Reduce LLM input size, it will match on pipes.
             content = prompt_prefix + "\n" + block_text + "\n" + prompt_suffix
+            # print(block_text)
+            # print(f"  prompt size: {len(content)}")
             response = client.chat(model=model, messages=[
                 {
                     'role': 'user',
@@ -78,16 +82,23 @@ def analyze_blocks(row):
                 },
             ])
             vote = response['message']['content']
-            print(f"{fund}: {vote}")
-            if '.' in vote:
-                vote = vote.split('.')[0]
+            print(f"{fund_name}: {vote}")
             vote = vote.lower().strip()
             # Validate and store vote
             if vote in ['for', 'against']:
                 conn.execute("""
-                    INSERT INTO votes (url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (url, fund, fund_strategy, ticker_symbol, fund_line, block_text, vote))
+                    INSERT INTO votes (
+                        url,
+                        split_method, block_start, block_text,
+                        fund_method, fund_name, ticker_symbol, fund_line,
+                        vote
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    url,
+                    split_method, block_start, block_text,
+                    fund_method, fund_name, ", ".join(ticker_symbols), fund_text_matched,
+                    vote
+                ))
                 conn.commit()
 
 

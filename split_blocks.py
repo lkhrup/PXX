@@ -65,14 +65,12 @@ def normalize_fund(fund: str) -> str:
     fund = re.sub(' +', ' ', fund)
     fund = fund.replace(' & ', ' AND ')  # filings/0001331971-0001438934-18-000424.txt
     fund = fund.replace('(R)', '')  # filings/0001131042-0000894189-18-005019.txt
-    fund = fund.replace(' :', ':')
+    # fund = fund.replace(' :', ':')
     fund = fund.strip()
-    if fund.startswith("FUND:"):
-        fund = fund[5:].strip()
-    if fund.startswith("FUND NAME:"):
-        fund = fund[10:].strip()
-    if fund.startswith("THE "):
-        fund = fund[4:]
+    # Remove some common trailing patterns
+    item_index = fund.find('ITEM ')
+    if item_index > 0:
+        fund = fund[:item_index]
     paren_index = fund.find('(')
     if paren_index > 0:
         fund = fund[:paren_index]
@@ -90,11 +88,6 @@ def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
     """
     if not title:
         return None
-    if title.startswith('REGISTRANT:'):
-        title = title[11:].strip()
-    item_index = title.find('ITEM ')
-    if item_index > 0:  # filings/0001123460-0001580642-18-003631.txt
-        title = title[:item_index].strip()
     for fund in series:
         if title == fund.name:
             return '1', fund
@@ -108,7 +101,14 @@ def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
             part_stripped = part.strip()
             for fund in series:
                 if part_stripped == fund.name:
-                    return '4', fund
+                    return '4-', fund
+    if ':' in title:
+        parts = title.split(':')
+        for part in parts:
+            part_stripped = part.strip()
+            for fund in series:
+                if part_stripped == fund.name:
+                    return '4:', fund
     # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
     space_index = title.find(' ')
     if space_index > 0:
@@ -127,7 +127,8 @@ def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
             if fund.name[:30] == title:
                 return '8', fund
     if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
-        # Catches some funds for which there is no <SERIES-NAME> line
+        # Catches some funds for which there is no <SERIES-NAME> line,
+        # but likely to cause erroneous matches.
         return '9', Fund(title, [])
     return None
 
@@ -371,13 +372,15 @@ def split_blocks(lines: list[str]) -> tuple[str, list[Block]]:
 def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> tuple[str, str, Fund] | None:
     """ Returns (text matched, method, fund), or None if no match.
     """
-    line = lines[index].strip()
-    if not line:
+    line = lines[index]
+    line_stripped = lines[index].strip()
+    if not line_stripped:
         return None
+    print(f"Fund? {line}")
 
-    if line.startswith("="):
+    if line_stripped.startswith("="):
         # Title, potentially multi-lines
-        line = line.replace('=', '').strip()
+        line = line_stripped.replace('=', '').strip()
         title_start = index
         while title_start > 0:
             title_line = lines[title_start - 1].strip()
@@ -391,21 +394,59 @@ def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> 
             return '\n'.join(lines[title_start:index + 1]), match[0], match[1]
         return None
 
-    if '|' in line:
-        fields = line.split('|')
-    else:
-        fields = [line]
-    for field in fields:
-        field_norm = normalize_fund(field)
-        match = match_fund(series, field_norm)
-        if match is not None:
-            return lines[index], match[0], match[1]
+    # TODO: allow multiple candidates
+    if line.startswith('  | '):
+        line = line[4:]
+        # There is a high risk we'd erroneously match fund mentioned in a proposal.
+        # So we're very stric as to what we accept.
+        # Patterns:
+        #   "Registrant: FUND_NAME"
+        #   "Fund Name: FUND_NAME"
+        #   "Fund: FUND_NAME"
+        #   "FUND_NAME" followed by empty columns
+        line_upper = line.upper()
+        if line_upper.startswith('REGISTRANT:'):
+            line = line[11:]
+        elif line.startswith('FUND NAME:'):
+            line = line[10:]
+        elif line.startswith('FUND:'):
+            line = line[5:]
+        cells = line_upper.split('|')
+        rest = "".join(cells[1:]).strip().upper()
+        if rest:
+            # Junk after the first cell, probably a vote line.
+            if 'ITEM' in rest and ('EXHIBIT' in rest or 'EX ' in rest):
+                # Exception for 0001314414-0001580642-18-003578.txt,
+                # where a cell contains "Item 1, Exhibit 17".
+                pass
+            if rest.startswith('FUND NAME'):
+                # 0001355064-0001580642-18-004117.txt
+                line = rest[9:].strip()
+                if line.startswith('-'):
+                    line = line[1:].strip()
+                # TODO: 0001644419-0001580642-18-004201.txt
+            else:
+                return None
+        line = line.split('|')[0].strip()
+
+    print(f"  matching: {line}")
+    match = match_fund(series, normalize_fund(line))
+    if match is not None:
+        return lines[index], match[0], match[1]
 
     return None
 
 
 def find_fund_name_in_lines(lines: list[str], start_index: int, series: list[Fund]) -> tuple[str, str, Fund]:
-    index = start_index
+
+    if '|' in lines[start_index]:
+        # Look for the fund name in the first cell of a table (0001479599-0001144204-18-046418.txt)
+        cells = lines[start_index].split('|')
+        match = match_fund(series, normalize_fund(cells[1]))
+        if match is not None:
+            return lines[start_index], match[0], match[1]
+
+    index = start_index - 1
     while index >= 0:
         line_upper = lines[index].upper()
         if "NO PROXY VOTING ACTIVITY" in line_upper:
@@ -456,7 +497,7 @@ def split_sections(series: list[Fund], filing: str):
                 section_end += 1
             # Find the fund name, going backward from the needle line.
             # Working line by line simplifies detection as the fund may occur inside a block.
-            fund_text_matched, fund_method, fund = find_fund_name_in_lines(lines, needle_index - 1, series)
+            fund_text_matched, fund_method, fund = find_fund_name_in_lines(lines, needle_index, series)
             print(f"Fund: <{fund}>")
             print(f"Matched: {fund_text_matched}")
             print(f"Method: {fund_method}")
@@ -507,6 +548,9 @@ def extract_series(preamble: str) -> list[Fund]:
     if 'SPDR MSCI WORLD STRATEGICFACTORS ETF' in normalized_names:
         name = 'SPDR MSCI ACWI IMI ETF'  # Not in preamble, 0001168164-0001193125-18-263578.txt
         series.append(Fund(name, []))
+
+    # Sort series by decreasing length. This will make more specific matches first.
+    series.sort(key=lambda x: len(x.name), reverse=True)
 
     return series
 

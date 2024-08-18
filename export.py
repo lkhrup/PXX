@@ -11,13 +11,13 @@ print("Doc #,Date filed,,Filing entity/person,Fund,Ticker symbols,Vote,URL")
 # Export each filing in CSV format
 for row in conn.execute("""
     SELECT * FROM votes v, filings f
-    WHERE v.url = f.url ORDER BY num, file_date, fund, vote;
+    WHERE v.url = f.url ORDER BY num, file_date, fund_name, vote;
 """):
     num = row['num']
     cik = row['cik']
     display_name = row['display_name']
     file_date = row['file_date']
-    fund = row['fund']
+    fund = row['fund_name']
     vote = row['vote'].title()
     url = row['url']
     ticker_symbol = row['ticker_symbol']
