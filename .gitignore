@@ -1,5 +1,5 @@
 /.venv
 /filings
 /blocks
-/temp
+/plain
 /*.sqlite

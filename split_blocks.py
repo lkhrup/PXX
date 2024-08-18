@@ -1,11 +1,57 @@
 import json
 import os
+import re
 import sys
 
-import html2text
+from html_to_plain import html_to_plain
+
+os.makedirs('plain', exist_ok=True)
 
 
-os.makedirs('temp', exist_ok=True)
+def custom_serializer(obj):
+    if hasattr(obj, 'to_dict'):
+        return obj.to_dict()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not serializable")
+
+
+def json_dumps(obj, **kwargs):
+    return json.dumps(obj, **kwargs, default=custom_serializer)
+
+
+class Fund:
+
+    def __init__(self, original_name, ticker_symbols):
+        self.original_name = original_name
+        self.name = normalize_fund(original_name)
+        self.ticker_symbols = ticker_symbols
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'ticker_symbols': self.ticker_symbols,
+        }
+
+    def __str__(self):
+        return self.original_name
+
+
+class Block:
+
+    def __init__(self, start, end, lines):
+        self.start = start
+        self.end = end
+        self.lines = lines
+
+    def to_dict(self):
+        return {
+            'start': self.start,
+            'end': self.end,
+            'lines': self.lines,
+        }
+
+
+def char_positions(line, char):
+    return [i for i, c in enumerate(line) if c == char]
 
 
 def normalize_fund(fund: str) -> str:
@@ -15,7 +61,7 @@ def normalize_fund(fund: str) -> str:
     fund = fund.replace('*', '')
     fund = fund.replace('_', '')
     fund = fund.replace('=', '')
-    fund = fund.replace('  ', ' ')
+    fund = re.sub(' +', ' ', fund)
     fund = fund.replace(' & ', ' AND ')  # filings/0001331971-0001438934-18-000424.txt
     fund = fund.replace('(R)', '')  # filings/0001131042-0000894189-18-005019.txt
     fund = fund.replace(' :', ':')
@@ -35,49 +81,53 @@ def normalize_fund(fund: str) -> str:
     return fund.strip()
 
 
-def match_fund(series, title):
+def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
+    """
+    :param series: list of funds
+    :param title: text to match
+    :return: (method, fund) or None
+    """
     if not title:
         return None
-    print(f"Match fund: {title}")
     if title.startswith('REGISTRANT:'):
         title = title[11:].strip()
     item_index = title.find('ITEM ')
-    if item_index > 0: # filings/0001123460-0001580642-18-003631.txt
+    if item_index > 0:  # filings/0001123460-0001580642-18-003631.txt
         title = title[:item_index].strip()
-    for _, fund, ticker_symbol in series:
-        if title == fund:
-            return '1', fund, ticker_symbol
-        if fund.startswith(title) and title+' FUND' == fund:  # 0000814680-0000814680-18-000120.txt
-            return '2', fund, ticker_symbol
-        if title == ticker_symbol:  # filings/0001551030-0001438934-18-000195.txt
-            return '3', fund, ticker_symbol
+    for fund in series:
+        if title == fund.name:
+            return '1', fund
+        if fund.name.startswith(title) and title + ' FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
+            return '2', fund
+        if title in fund.ticker_symbols:  # filings/0001551030-0001438934-18-000195.txt
+            return '3', fund
     if '-' in title:
         parts = title.split('-')
         for part in parts:
             part_stripped = part.strip()
-            for _, fund, ticker_symbol in series:
-                if part_stripped == fund:
-                    return '4', fund, ticker_symbol
+            for fund in series:
+                if part_stripped == fund.name:
+                    return '4', fund
     # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
     space_index = title.find(' ')
     if space_index > 0:
         title1 = title[space_index + 1:]
-        for _, fund, ticker_symbol in series:
-            if title1 == fund:
-                return '5', fund, ticker_symbol
+        for fund in series:
+            if title1 == fund.name:
+                return '5', fund
     # Try matching the start or end of the title
-    for _, fund, ticker_symbol in series:
-        if fund.endswith(' ' + title):
-            return '6', fund, ticker_symbol
-        if title.startswith(fund + ' '):
-            return '7', fund, ticker_symbol
+    for fund in series:
+        if fund.name.endswith(' ' + title):
+            return '6', fund
+        if title.startswith(fund.name + ' '):
+            return '7', fund  # This method may cause bad matches
     if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
-        for _, fund, ticker_symbol in series:
-            if fund[:30] == title:
-                return '8', fund, ticker_symbol
+        for fund in series:
+            if fund.name[:30] == title:
+                return '8', fund
     if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
-        # Fast path, also catches some funds for which there is no <SERIES-NAME> line
-        return '9', title, None
+        # Catches some funds for which there is no <SERIES-NAME> line
+        return '9', Fund(title, [])
     return None
 
 
@@ -95,6 +145,9 @@ def normalize_security(security):
     pipe_index = security.find('|')
     if pipe_index > 0:
         security = security[:pipe_index]  # 0001535538-0001535538-18-000053.txt
+    company_name = security.find('COMPANY NAME:')
+    if company_name > 0:
+        security = security[company_name + 12:]
     meeting_date_index = security.find(' MEETING DATE:')
     if meeting_date_index > 0:
         security = security[:meeting_date_index]  # 0000814680-0000814680-18-000120.txt
@@ -121,9 +174,6 @@ def compare_securities(security1, security2):
     return None
 
 
-# ZHEJIANG EXPRESSWAY CO., LTD.
-
-
 def needle_found(line):
     line_upper = line.upper()
     tsla_index = line_upper.find('TSLA')
@@ -138,69 +188,126 @@ def needle_found(line):
 def split_blocks_separator(lines, separator):
     print(f"Splitting using separator {separator}")
     blocks = []
-    block = []
-    for line in lines:
+    start = 0
+    for i, line in enumerate(lines):
         if separator in line:
-            if block:
-                blocks.append(block)
-            block = []
-        else:
-            block.append(line)
-    if block:
-        blocks.append(block)
+            if i > start:
+                blocks.append(Block(start, i, lines[start:i]))
+            start = i
+    if len(lines) > start:
+        blocks.append(Block(start, len(lines), lines[start:]))
     return blocks
 
 
 def split_block_double_separator(lines, separator):
     print(f"Splitting using double separator {separator}")
+    # 0001579982-0001144204-18-042736
     blocks = []
-    block = []
-    num_lines = len(lines)
-    for index in range(1, num_lines):
-        if index + 2 < num_lines and separator in lines[index] and separator in lines[index + 2]:
-            if block:
-                blocks.append(block)
-            block = [lines[index]]
-        else:
-            block.append(lines[index])
-    if block:
-        blocks.append(block)
+    start = 0
+    for i, line in enumerate(lines):
+        if i + 2 < len(lines) and separator in lines[i] and separator in lines[i + 2]:
+            if i > start:
+                blocks.append(Block(start, i, lines[start:i]))
+            start = i
+    if start < len(lines):
+        blocks.append(Block(start, len(lines), lines[start:]))
     return blocks
 
 
 def split_blocks_indentation(lines):
     print(f"Splitting using indentation")
+    # 0001432353-0001135428-18-000216
     blocks = []
-    block = []
-    for line in lines:
+    start = 0
+    for i, line in enumerate(lines):
         if line and line[0] != ' ':  # New block
-            if block:
-                blocks.append(block)
-            block = [line]
-        else:
-            block.append(line)
-    if block:
-        blocks.append(block)
+            if i > start:
+                blocks.append(Block(start, i, lines[start:i]))
+            start = i
+    if start < len(lines):
+        blocks.append(Block(start, len(lines), lines[start:]))
     return blocks
 
 
-def split_blocks_tabular(lines, marker):
-    # Split blocks a line before each occurrence of '| **Security**'
-    print("Using tabular block split")
+def split_blocks_marker(lines, marker, offset):
+    # Split blocks `offset` lines before each occurrence of the marker.
+    # 0000071516-0000051931-18-000837
+    print("Using marker block split")
     blocks = []
-    block_start = 0
-    index = 0
-    while index < len(lines):
-        line = lines[index]
+    start = 0
+    for i, line in enumerate(lines):
         if marker in line:
-            blocks.append(lines[block_start:index - 1])
-            block_start = index - 1
-        index += 1
-    blocks.append(lines[block_start:])
+            blocks.append(Block(start, i - offset, lines[start:i - offset]))
+            start = i - offset
+    if start < len(lines):
+        blocks.append(Block(start, len(lines), lines[start:]))
     return blocks
 
 
-def split_blocks(lines: list[str]) -> tuple[str, list[list[str]]]:
+def split_blocks_huge_table(lines):
+    # Examples include:
+    # 0000355767-0001193125-18-240576.txt
+    # 0000811161-0000897101-18-000869.txt
+    # 0000811161-0000897101-18-000869.txt
+    blocks = []
+    index = 0
+
+    line = ""
+    while index < len(lines):
+
+        # Locate a table start.
+        while index < len(lines):
+            line = lines[index]
+            if line.startswith('  | -'):
+                break
+            index += 1
+        if index == len(lines):
+            break
+        print("Begin new table")
+
+        # Parse column width line, data fields are contiguous blocks of '-' characters.
+        column_positions = []
+        in_frame = True
+        column_start = 0
+        for i, c in enumerate(line):
+            if in_frame:
+                if c == '-':
+                    in_frame = False
+                    column_start = i
+            else:
+                if c != '-':
+                    in_frame = True
+                    column_positions.append((column_start, i + 1))
+
+        # Assume the next line contains headers, split it into columns.
+        header_line = lines[index + 1]
+        headers = []
+        for start, end in column_positions:
+            headers.append(header_line[start:end].strip())
+        # print(f"Headers: {headers}")
+        index += 2  # Skip column widths and header lines
+
+        # Collect data from subsequent rows, transposing the table
+        while index < len(lines):
+            line = lines[index]
+            if not line.startswith('  |'):  # End of table
+                break
+            values = []
+            for start, end in column_positions:
+                values.append(line[start:end].strip())
+            # Zip with headers
+            block_lines = []
+            print(f"Headers: {headers}")
+            print(f"Values: {values}")
+            for header, value in zip(headers, values):
+                block_lines.append(f"{header}: {value}")
+            blocks.append(Block(index, index + 1, block_lines))
+            index += 1
+
+    return blocks
+
+
+def split_blocks(lines: list[str]) -> tuple[str, list[Block]]:
     """ Find the index of the first line mentioning the relevant security,
         identify the block separator, and split the blocks accordingly.
 
@@ -217,24 +324,34 @@ def split_blocks(lines: list[str]) -> tuple[str, list[list[str]]]:
         return 'none', []
     print("Line  : " + lines[needle_index])
     print("Line+1: " + lines[needle_index + 1])
-    if 'Ticker: ' in lines[needle_index]:
-        return 'tabular, ticker', split_blocks_tabular(lines, 'Ticker: ')
-    if '|  Security' in lines[needle_index + 1]:
-        return 'tabular, security1', split_blocks_tabular(lines, '|  Security')
-    if '| **Security**' in lines[needle_index + 1]:
-        return 'tabular, security2', split_blocks_tabular(lines, '| **Security**')
+    if 'Company Name: ' in lines[needle_index]:  # 0000917124-0001398344-18-012935
+        return 'tabular, company name', split_blocks_marker(lines, 'Company Name: ', 0)
+    if '| Security' in lines[needle_index + 1]:
+        return 'tabular, security1', split_blocks_marker(lines, '| Security', 1)
+    if '| Security: ' in lines[needle_index + 2]:
+        return 'tabular, security2', split_blocks_marker(lines, '| Security: ', 2)
     if '---' in lines[needle_index - 1] and '---' in lines[needle_index + 1]:
         return 'double_sep, ---', split_block_double_separator(lines, '---')
-    if lines[needle_index - 2].startswith('| ** **'):
-        return 'sep, | ** **', split_blocks_separator(lines, '| ** **')
-    if '| F | F' in lines[needle_index]:  # XXX This may be broken due pad_tables=True
-        return 'lines', list(map(lambda x: [x], lines))
+
+    # If we can find 'FOR' or 'AGAINST' at and before or after the needle line, we have a huge table.
+    needle_upper = lines[needle_index].upper()
+    if 'FOR' in needle_upper or 'AGAINST' in needle_upper:
+        around_upper = (lines[needle_index - 1] + " " + lines[needle_index + 1]).upper()
+        if 'FOR' in around_upper or 'AGAINST' in around_upper:
+            return 'huge_table', split_blocks_huge_table(lines)
+    if '| F |' in needle_upper or '| N |' in needle_upper:
+        around_upper = (lines[needle_index - 1] + " " + lines[needle_index + 1]).upper()
+        if '| F |' in around_upper or '| N |' in around_upper:
+            return 'huge_table', split_blocks_huge_table(lines)
 
     sep = None
     for distance in range(1, 25):
         line = lines[needle_index - distance].strip()
         if not line:
             continue
+        if re.compile(r"\s*[=_-]{3,}\s*").match(line):
+            sep = line
+            break
         if '---' in line:
             sep = '---'
             break
@@ -250,167 +367,145 @@ def split_blocks(lines: list[str]) -> tuple[str, list[list[str]]]:
     return 'indentation', split_blocks_indentation(lines)
 
 
-def find_fund_name_in_block(block, series):
-    title_index = len(block) - 1
-    title_lines = []
-    detect_title_lines = True
-    while title_index >= 0:
-        line = block[title_index].strip()
-        print(f"Line {title_index}: {line}")
-        if line:
-            if detect_title_lines:
-                if line.startswith("="):
-                    title_lines.append(line.replace('=', '').strip())
-                elif len(title_lines) > 0:
-                    # Only collect adjacent lines
-                    detect_title_lines = False
-            if '|' in line:
-                fields = line.split('|')
-            else:
-                fields = [line]
-            stop = False
-            for field in fields:
-                field_norm = normalize_fund(field)
-                if "NO PROXY VOTING ACTIVITY" in field_norm:
-                    stop = True
-                    break
-                if "NOT CAST ANY PROXY VOTES" in field_norm:
-                    stop = True
-                    break
-                fund = match_fund(series, field_norm)
-                if fund is not None:
-                    return fund, line
-            if stop:
+def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> tuple[str, str, Fund] | None:
+    """ Returns (text matched, method, fund), or None if no match.
+    """
+    line = lines[index].strip()
+    if not line:
+        return None
+
+    if line.startswith("="):
+        # Title, potentially multi-lines
+        line = line.replace('=', '').strip()
+        title_start = index
+        while title_start > 0:
+            title_line = lines[title_start - 1].strip()
+            if not title_line.startswith('='):
                 break
-            print(f"Skipping noise: {line}")
-        title_index -= 1
-    if title_lines:
-        title_lines.reverse()
-        line = " ".join(title_lines)
-        print(f"Detected title lines: {line}")
+            line = title_line.replace('=', '').strip() + " " + line
+            title_start -= 1
         line_norm = normalize_fund(line)
-        fund = match_fund(series, line_norm)
-        if fund is not None:
-            return fund, line
-    if len(series) == 1:
-        return series[0], None  # filings/0001030979-0001162044-18-000535.txt
-    return None, None
+        match = match_fund(series, line_norm)
+        if match is not None:
+            return '\n'.join(lines[title_start:index + 1]), match[0], match[1]
+        return None
+
+    if '|' in line:
+        fields = line.split('|')
+    else:
+        fields = [line]
+    for field in fields:
+        field_norm = normalize_fund(field)
+        match = match_fund(series, field_norm)
+        if match is not None:
+            return lines[index], match[0], match[1]
+
+    return None
 
 
-def find_fund_name(blocks, start_index, series):
+def find_fund_name_in_lines(lines: list[str], start_index: int, series: list[Fund]) -> tuple[str, str, Fund]:
     index = start_index
     while index >= 0:
-        print(f"Looking for fund name in block {index}")
-        fund, ticker_symbol = find_fund_name_in_block(blocks[index], series)
-        if fund is not None:
-            return fund, ticker_symbol
+        line_upper = lines[index].upper()
+        if "NO PROXY VOTING ACTIVITY" in line_upper:
+            break
+        if "NOT CAST ANY PROXY VOTES" in line_upper:
+            break
+        match = find_fund_name_in_line(lines, index, series)
+        if match is not None:
+            return match
         index -= 1
+
+    # If we reach the start of the file and there is a single fund, assume it is it.
+    if len(series) == 1:
+        return '0', '', series[0]
+
     print(f"Fatal: fund not identified")
     exit(1)
 
 
-def split_sections(series, filing):
+def split_sections(series: list[Fund], filing: str):
     lines = filing.split('\n')
-    method, blocks = split_blocks(lines)
-    print(f"Found {len(blocks)} blocks")
-    print(json.dumps(blocks, indent=2))
+    split_method, blocks = split_blocks(lines)
+    print(f"Found {len(blocks)} blocks by method {split_method}")
+    # print(json_dumps(blocks, indent=2))
     sections = []
-    section_end = -1
-    for block_index in range(len(blocks)):
-        if block_index <= section_end:
-            # Skip blocks already processed
-            continue
-        block = blocks[block_index]
+    section_start = 0
+    while section_start < len(blocks):
+        block = blocks[section_start]
         # Find the line index of the first line mentioning TSLA or TESLA
         needle_index = None
-        for line_index in range(len(block)):
-            if needle_found(block[line_index]):
+        for line_index in range(block.start, block.end):
+            if needle_found(lines[line_index]):
                 needle_index = line_index
                 break
+        section_end = section_start + 1
         if needle_index is not None:
-            print(f"Needle found in block {block_index}, line {needle_index}")
-            # Walk back to find the start of the section,
-            # assuming the security is on the same line in each block, and securities are listed alphabetically.
-            section_start = block_index
-            current_security = normalize_security(blocks[section_start][needle_index])
-            print(f"security: {current_security}")
-            was_page = False
-            while section_start > 0:
-                section_start -= 1
-                prev_block = blocks[section_start]
-                if needle_index >= len(prev_block):
-                    print(f"Short block, assuming fund section start")
-                    break
-                prev_security = normalize_security(prev_block[needle_index])
-                if prev_security == '<PAGE>':
-                    was_page = True
-                    continue  # Skip, 0001573386-0001135428-18-000263.txt
-                if prev_security.startswith('('):  # 0000067160-0001144204-18-047049.txt
-                    break
-                print(f"prev security: {prev_security}")
-                current_security = compare_securities(prev_security, current_security)
-                print(f"next security: {current_security}")
-                if current_security is None:
-                    break
-            if was_page and section_start > 0:  # first <PAGE> -- filings/0000869365-0001193125-18-262109.txt
-                section_start += 1  # 0001573386-0001135428-18-000263.txt
+            print(f"Needle found in block {section_start}, line {needle_index}")
             # Walk forward to find the end of the section
-            section_end = block_index
-            while section_end < len(blocks) - 2:
-                next_block = blocks[section_end + 1]
-                print(f"Next block: {next_block}")
-                print(f"Needle index: {needle_index}")
-                if needle_index > len(next_block):
-                    break  # 0001314414-0001580642-18-003578.txt
-                if not needle_found(next_block[needle_index]):
+            while section_end < len(blocks):
+                next_block = blocks[section_end]
+                found = False
+                for line_index in range(next_block.start, next_block.end):
+                    if needle_found(lines[line_index]):
+                        found = True
+                        break
+                if not found:
                     break
                 section_end += 1
-            print(f"Section: {section_start}-{block_index}-{section_end}")
-            # Find the fund name
-            fund, fund_line = find_fund_name(blocks, section_start, series)
+            # Find the fund name, going backward from the needle line.
+            # Working line by line simplifies detection as the fund may occur inside a block.
+            fund_text_matched, fund_method, fund = find_fund_name_in_lines(lines, needle_index - 1, series)
             print(f"Fund: <{fund}>")
-            print(f"Fund line: {fund_line}")
-            section_blocks = blocks[block_index:section_end + 1]
-            print(json.dumps(section_blocks, indent=2))
+            print(f"Matched: {fund_text_matched}")
+            print(f"Method: {fund_method}")
+            section_blocks = blocks[section_start:section_end]
+            print(f"Section: blocks {section_start}-{section_end}")
+            print(json_dumps(section_blocks, indent=2))
             sections.append({
                 'fund': fund,
-                'fund_line': fund_line,
                 'blocks': section_blocks,
-                'split_method': method,
+                'fund_text_matched': fund_text_matched,
+                'split_method': split_method,
+                'fund_method': fund_method,
             })
+        section_start = section_end
     return sections
 
 
-def extract_series(preamble: str) -> list[tuple[str, str, str]]:
+def extract_series(preamble: str) -> list[Fund]:
     # From the preample, extract <SERIES-NAME> lines
     series = []
 
     preamble_lines = preamble.split('\n')
-    fund = None
+    name = None
+    normalized_names = []
     ticker_symbols = []
     for line in preamble_lines:
         if line.startswith('<SERIES-NAME>'):
-            fund = normalize_fund(line[13:])
+            name = line[13:]
         if line.startswith('<CLASS-CONTRACT-TICKER-SYMBOL>'):
             ticker_symbols.append(line.split('>')[1].strip())
         if line.startswith('</SERIES>'):
-            if fund is not None:
-                series.append(('0', fund, ", ".join(ticker_symbols)))
-            fund = None
+            if name is not None:
+                fund = Fund(name, ticker_symbols)
+                series.append(fund)
+                normalized_names.append(fund.name)  # normalized name
+            name = None
             ticker_symbols = []
 
     if not series:
         for line in preamble_lines:
             if "COMPANY CONFORMED NAME:" in line:  # 0001298699-0001193125-18-252336.txt
-                fund = line.split(':')[1].strip()
-                series.append(('0', normalize_fund(fund), ""))
+                name = line.split(':')[1].strip()
+                series.append(Fund(name, []))
 
-    if ('0', 'SPROTT GOLD MINERS ETF', 'SGDM') in series:
-        fund = 'Sprott Buzz Social Media Insights ETF'  # Not in preamble, 0001414040-0001387131-18-003632.txt
-        series.append(('0.1', normalize_fund(fund), ""))
-    if ('0', 'SPDR MSCI WORLD STRATEGICFACTORS ETF', 'QWLD') in series:
-        fund = 'SPDR MSCI ACWI IMI ETF'  # Not in preamble, 0001168164-0001193125-18-263578.txt
-        series.append(('0.2', normalize_fund(fund), ""))
+    if 'SPROTT GOLD MINERS ETF' in normalized_names:
+        name = 'Sprott Buzz Social Media Insights ETF'  # Not in preamble, 0001414040-0001387131-18-003632.txt
+        series.append(Fund(name, []))
+    if 'SPDR MSCI WORLD STRATEGICFACTORS ETF' in normalized_names:
+        name = 'SPDR MSCI ACWI IMI ETF'  # Not in preamble, 0001168164-0001193125-18-263578.txt
+        series.append(Fund(name, []))
 
     return series
 
@@ -420,20 +515,26 @@ def ensure_text_filing(filename: str, filing: str) -> str:
     first_line_end = filing.find('\n')
     first_line = filing[:first_line_end].lower()
     if first_line.startswith('<html>') or first_line.startswith('<!doctype html'):
-        temp_file = os.path.join('temp', filename)
-        if os.path.exists(temp_file):
+        plain_file = os.path.join('plain', filename)
+        if os.path.exists(plain_file):
             print("Using cached HTML conversion")
-            with open(temp_file, 'r', encoding="utf-8") as f:
-                filing = f.read()
         else:
             print("Converting HTML filing")
-            h = html2text.HTML2Text()
-            h.body_width = 0  # Disable line wrapping -- 0001314414-0001580642-18-003578.txt
-            h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
-            filing = h.handle(filing)
-            # Write to a temporary file
-            with open(temp_file, 'w', encoding="utf-8") as f:
-                f.write(filing)
+            # Using html2text (unsatisfactory, table layout is sometimes broken):
+            #   h = html2text.HTML2Text()
+            #   h.body_width = 0  # Disable line wrapping -- 0001314414-0001580642-18-003578.txt
+            #   h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
+            #   filing = h.handle(filing)
+            #
+            # Using pandoc (unsatisfactory, no support for multiple table header rows):
+            #   with tempfile.NamedTemporaryFile(suffix=".html", mode='w', encoding='utf-8') as temp_html_file:
+            #       temp_html_file.write(filing)
+            #       temp_html_path = temp_html_file.name
+            #       subprocess.run(["pandoc", temp_html_path, "-f", "html", "-t", "plain", "-o", plain_file])
+            with open(plain_file, 'w', encoding="utf-8") as f:
+                html_to_plain(filing, f)
+        with open(plain_file, 'r', encoding="utf-8") as f:
+            filing = f.read()
     return filing
 
 
@@ -445,7 +546,7 @@ def split_filing(filename, output_filename):
     # Split at the "<TEXT>" line
     parts = filing.split('<TEXT>\n')
     preamble = parts[0]
-    filing = parts[1]
+    filing = parts[1].split('</TEXT>\n')[0]
     if len(parts) > 2:
         print("Warning: multiple <TEXT> sections")
 
@@ -464,7 +565,7 @@ def split_filing(filename, output_filename):
         print(f"Warning: no relevant blocks found in {filename}")
         exit(1)
     with open(output_filename, 'w', encoding="utf-8") as f:
-        f.write(json.dumps(sections, indent=2))
+        f.write(json_dumps(sections, indent=2))
 
 
 def split_filings():
