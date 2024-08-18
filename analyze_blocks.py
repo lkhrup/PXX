@@ -40,7 +40,6 @@ For example, if you see "Mgt Rec Vote Cast" in the input, then "For Against" on 
 The text may be preformatted and keeping track of column alignments may help. Columns may be separated with the '|' character.
 Your response must be "None" if the input does not include a definite vote on the relevant issue (Did Not Vote, incorrect meeting date, irrelevant security).
 Otherwise, your response must be a single word, "For" or "Against".
-For example "For 7:13" means "For" on line 7, column 13.
 Do not explain your reasoning.
 
 Input:

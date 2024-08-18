@@ -104,7 +104,7 @@ while True:
             )
         else:
             conn.execute(
-                "INSERT INTO filings (url, num, filename, cik, display_name, file_date) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO filings (url, num, filename, cik, display_name, file_date) VALUES (?, ?, ?, ?, ?, ?)",
                 (url, num, filename, cik, display_names, file_date)
             )
         cu.close()
