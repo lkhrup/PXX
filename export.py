@@ -19,8 +19,10 @@ for row in conn.execute("""
     file_date = row['file_date']
     fund = row['fund_name']
     vote = row['vote'].title()
+    block_start = row['block_start']
     url = row['url']
     ticker_symbol = row['ticker_symbol']
     if ticker_symbol is None:
         ticker_symbol = ""
-    print(f'{num},{file_date},,"{display_name}",{fund},"{ticker_symbol}",{vote},"{url}"')
+    notes = row['note'].replace('"', '""') if row['note'] is not None else ""
+    print(f'{num},{file_date},,"{display_name}",{fund},"{ticker_symbol}",{vote},{block_start},"{url}","{notes}"')
