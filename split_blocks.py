@@ -26,7 +26,7 @@ class Fund:
     def __init__(self, original_name, ticker_symbols):
         self.original_name = original_name
         self.name = normalize_fund(original_name)
-        self.ticker_symbols = ticker_symbols  # TODO: sort alphabetically
+        self.ticker_symbols = sorted(ticker_symbols)
 
     def to_dict(self):
         return {
