@@ -1,26 +1,57 @@
-import sys
+import io
 import re
+import sys
+from typing import TextIO
 
 # lxml has a 10MB limit on text content; 0000814679-0000067590-18-001417 has 44MB of text
 from lxml import html
 
 
-class Text:
+class ExtractorBase:
+
+    def __init__(self):
+        self.add_space = False
+        self.add_newline = False
+
+    def add_text(self, text: str):
+        text = text.replace('\n', ' ')
+        text_s = text.strip()
+        if not text_s:
+            self.add_space = True
+            return
+        text = re.sub(r'&nbsp;', ' ', text, flags=re.IGNORECASE)
+        text = re.sub('[ \u00a0]+', ' ', text)
+        if self.add_newline and text:
+            text = '\n' + text
+            self.add_space = False
+            self.add_newline = False
+        elif self.add_space:
+            text = ' ' + text
+            self.add_space = False
+        self.emit(text)
+
+    def emit(self, text: str):
+        pass
+
+
+class Text(ExtractorBase):
     """
     Text extraction from an HTML element.
     Preserves line breaks imposed by <div>, <p>, and <br> tags, but ignores '\n' and normalizes spaces.
     """
 
-    def __init__(self, element):
+    def __init__(self, element: html.HtmlElement):
+        super().__init__()
         self.text_parts = []
-        self.add_space = False
-        self.add_newline = False
         self.traverse(element)
+
+    def emit(self, text: str):
+        self.text_parts.append(text)
 
     def __str__(self):
         return ''.join(self.text_parts).strip()
 
-    def traverse(self, element):
+    def traverse(self, element: html.HtmlElement):
         if element.text:
             self.add_text(element.text)
         for child in element.iterchildren():
@@ -30,22 +61,6 @@ class Text:
             self.add_space = False
         if element.tail:
             self.add_text(element.tail)
-
-    def add_text(self, text):
-        text = text.replace('\n', ' ')
-        text_s = text.strip()
-        if not text_s:
-            self.add_space = True
-            return
-        text = re.sub('[ \u00a0]+', ' ', text)
-        if self.add_newline and text:
-            text = '\n' + text
-            self.add_space = False
-            self.add_newline = False
-        elif self.add_space:
-            text = ' ' + text
-            self.add_space = False
-        self.text_parts.append(text)
 
 
 class Table:
@@ -63,7 +78,7 @@ class Table:
         # TODO: 0001120543-0000930413-18-002307 has headers only in the first table
         # 0000831114-0001398344-18-012865.json
 
-    def write(self, buffer):
+    def write(self, buffer: TextIO):
 
         # Detect 0-width columns
         zwc = [i for i, width in enumerate(self.col_widths) if width == 0]
@@ -119,7 +134,7 @@ class Table:
         for element in self.table.iterchildren():
             self.traverse(element)
 
-    def traverse(self, element):
+    def traverse(self, element: html.HtmlElement):
         if element.tag == 'tr':
             self.traverse_row(element)
         elif element.tag in ['th', 'td']:
@@ -129,13 +144,13 @@ class Table:
             for child in element.iterchildren():
                 self.traverse(child)
 
-    def traverse_row(self, row):
+    def traverse_row(self, row: html.HtmlElement):
         for cell in row.iterchildren():
             if cell.tag in ['th', 'td']:
                 self.traverse_cell(cell)
         self.flush()
 
-    def traverse_cell(self, cell):
+    def traverse_cell(self, cell: html.HtmlElement):
         colspan = int(cell.get("colspan", 1))
         start_col = self.col_index
         for _ in range(colspan):
@@ -156,71 +171,59 @@ class Table:
         self.col_index = 0
 
 
-class Document:
+class Document(ExtractorBase):
 
-    def __init__(self, root, pre_blocks):
+    def __init__(self, root: html.HtmlElement, pre_blocks: list[str], buffer: io.TextIOBase):
+        super().__init__()
         self.root = root
+        self.pre_blocks = pre_blocks
+        self.buffer = buffer
         self.add_space = False
         self.add_newline = False
-        self.pre_blocks = pre_blocks
 
-    def write(self, buffer):
-        self.traverse(self.root, 0, buffer)
+    def emit(self, text: str):
+        self.buffer.write(text)
 
-    def traverse(self, element, depth, buffer):
+    def render(self):
+        self.traverse(self.root, 0)
+
+    def traverse(self, element: html.HtmlElement, depth: int):
         if isinstance(element, html.HtmlComment):
             return
         # print(f">{' ' * depth}{element.tag}")
         if element.tag == 'table':
-            Table(element).write(buffer)
+            Table(element).write(self.buffer)
             self.add_newline = True
             self.add_space = False
             # ignore element.tail, it'll likely contain junk inside the table
         elif element.tag == 'pre':
             if element.text:
                 # Look up the pre block by index
-                buffer.write(self.pre_blocks[int(element.text)])
+                self.emit(self.pre_blocks[int(element.text)])
             self.add_newline = True
             self.add_space = False
             if element.tail:
-                self.add_text(element.tail, buffer)
+                self.add_text(element.tail)
         else:
             if element.tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                buffer.write(f"{'#' * int(element.tag[1:])} f{Text(element)}\n")
+                self.emit(f"{'#' * int(element.tag[1:])} f{Text(element)}\n")
             else:
                 if element.text:
-                    self.add_text(element.text, buffer)
+                    self.add_text(element.text)
                 for child in element.iterchildren():
-                    self.traverse(child, depth + 1, buffer)
+                    self.traverse(child, depth + 1)
             if element.tag in ['html', 'body', 'div', 'p', 'br', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                 self.add_newline = True
                 self.add_space = False
             if element.tail:
-                self.add_text(element.tail, buffer)
-
-    def add_text(self, text, buffer):
-        text = text.replace('\n', ' ')
-        text_s = text.strip()
-        if not text_s:
-            self.add_space = True
-            return
-        text = re.sub('[ \u00a0]+', ' ', text)
-        if self.add_newline and text:
-            text = '\n' + text
-            self.add_space = False
-            self.add_newline = False
-        elif self.add_space:
-            text = ' ' + text
-            self.add_space = False
-        buffer.write(text)
+                self.add_text(element.tail)
 
 
-def html_to_plain(html_content, buffer):
-
+def html_to_plain(html_content: str, buffer: TextIO):
     # Extract <PRE></PRE> blocks manipulating the string.
     # PRE blocks may exceed the 10MB limit per text node of lxml.
     # We replace the content with an index in an array, and then replace the index with the content.
-    pre_blocks = []
+    pre_blocks: list[str] = []
     pre_block_index = 0
     pre_start_re = re.compile(r'<pre[^>]*>', re.IGNORECASE)
     pre_end_re = re.compile(r'</pre>', re.IGNORECASE)
@@ -239,7 +242,7 @@ def html_to_plain(html_content, buffer):
         start_pos = start_match.end() + 1
         pre_block_index += 1
 
-    Document(html.fromstring(html_content), pre_blocks).write(buffer)
+    Document(html.fromstring(html_content), pre_blocks, buffer).render()
 
 
 if __name__ == '__main__':
