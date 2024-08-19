@@ -60,11 +60,21 @@ def analyze_blocks(row):
         blocks = json.loads(f.read())
     print(filename)
     for fund_block in blocks:
-        fund = fund_block['fund']
-        fund_name = fund['name']
-        ticker_symbols = fund['ticker_symbols']
-        fund_method = fund_block['fund_method']
-        fund_text_matched = fund_block['fund_text_matched']
+
+        # Fund information (if available)
+        fund = fund_block.get('fund', None)
+        if fund is not None:
+            fund_name = fund['name']
+            ticker_symbols = fund['ticker_symbols']
+            fund_method = fund_block['fund_method']
+            fund_text_matched = fund_block['fund_text_matched']
+        else:
+            fund_name = None
+            ticker_symbols = []
+            fund_method = None
+            fund_text_matched = None
+
+        # Block information
         split_method = fund_block['split_method']
         text_blocks = fund_block['blocks']
         for block in text_blocks:
