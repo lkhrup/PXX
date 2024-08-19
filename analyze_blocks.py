@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sqlite3
@@ -111,9 +112,29 @@ def analyze_blocks(row):
                 conn.commit()
 
 
-# For every filing in sqlite:
-for row in conn.execute('SELECT * FROM filings'):
-    try:
-        analyze_blocks(row)
-    except FileNotFoundError:
-        print(f"Warning: no blocks for {row['url']}")
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog='split_blocks',
+        description='Split blocks from filings')
+    parser.add_argument('-c', '--clear', action='store_true')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('filings', metavar='FILING', type=str, nargs='*',
+                        help='names of the filings to split (no path, with ext)')
+    args = parser.parse_args()
+
+    if args.clear:
+        # Clear votes
+        conn.execute("DELETE FROM votes")
+
+    if args.filings:
+        for row in conn.execute('SELECT * FROM filings WHERE filename IN ({})'.format(
+                ','.join('?' * len(args.filings))), args.filings):
+            analyze_blocks(row)
+    else:
+        for row in conn.execute('SELECT * FROM filings'):
+            try:
+                analyze_blocks(row)
+            except FileNotFoundError:
+                print(f"Warning: no blocks for {row['url']}")
+
+    exit(0)
