@@ -509,6 +509,13 @@ class TestFindFundLine(unittest.TestCase):
         assert find_fund_line(10, fund_lines) == 2
         assert find_fund_line(11, fund_lines) == 2
         assert find_fund_line(15, fund_lines) == 2
+        fund_lines = [
+            (1650, ('', '', Fund('ARK Industrial Innovation ETF', []))),
+            (3475, ('ARK Innovation ETF', '1', Fund('ARK Innovation ETF', []))),
+            (7338, ('ARK Web x.0 ETF', '1', Fund('ARK Web x.0 ETF', []))),
+            (8723, ('The 3D Printing ETF', '1', Fund('The 3D Printing ETF', []))),
+        ]
+        assert find_fund_line(3252, fund_lines) == 0
 
 
 def split_sections(series: list[Fund], filing: str):
@@ -556,7 +563,7 @@ def split_sections(series: list[Fund], filing: str):
             print(json_dumps(section_blocks, indent=2))
             # Find the fund name.
             fund_line_index = find_fund_line(needle_index, fund_lines)
-            if fund_line_index > 0:
+            if fund_line_index >= 0:
                 print(f"Fund line index: {fund_line_index}")
                 line, match = fund_lines[fund_line_index]
                 print(f"Line number in filing: {line}")
@@ -716,7 +723,8 @@ if __name__ == '__main__':
                 os.remove(os.path.join('blocks', filename))
 
     if args.filings:
-        split_filing(args.filings, "/dev/stdout")
+        for filing in args.filings:
+            split_filing(filing, "/dev/stdout")
     else:
         split_filings()
     exit(0)
