@@ -2,6 +2,8 @@ import json
 import os
 import re
 import sys
+import unittest
+import argparse
 
 from html_to_plain import html_to_plain
 
@@ -24,7 +26,7 @@ class Fund:
     def __init__(self, original_name, ticker_symbols):
         self.original_name = original_name
         self.name = normalize_fund(original_name)
-        self.ticker_symbols = ticker_symbols
+        self.ticker_symbols = ticker_symbols  # TODO: sort alphabetically
 
     def to_dict(self):
         return {
@@ -86,7 +88,9 @@ def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
     :param title: text to match
     :return: (method, fund) or None
     """
-    if not title:
+    if not title or title == "FUND" or title == "TRUST FUND" or title == "PROPOSED FUND":
+        return None
+    if 'INSTITUTIONAL CLIENT' in title or 'WHETHER FUND' in title:
         return None
     for fund in series:
         if title == fund.name:
@@ -119,17 +123,17 @@ def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
     # Try matching the start or end of the title
     for fund in series:
         if fund.name.endswith(' ' + title):
-            return '6', fund
+            return '6', fund  # This method may cause bad matches
         if title.startswith(fund.name + ' '):
             return '7', fund  # This method may cause bad matches
     if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
         for fund in series:
             if fund.name[:30] == title:
                 return '8', fund
-    if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
-        # Catches some funds for which there is no <SERIES-NAME> line,
-        # but likely to cause erroneous matches.
-        return '9', Fund(title, [])
+    # if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
+    # Catches some funds for which there is no <SERIES-NAME> line,
+    # but likely to cause erroneous matches.
+    # return '9', Fund(title, [])
     return None
 
 
@@ -376,7 +380,7 @@ def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> 
     line_stripped = lines[index].strip()
     if not line_stripped:
         return None
-    print(f"Fund? {line}")
+    # print(f"Fund? {line}")
 
     if line_stripped.startswith("="):
         # Title, potentially multi-lines
@@ -394,8 +398,9 @@ def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> 
             return '\n'.join(lines[title_start:index + 1]), match[0], match[1]
         return None
 
-    # TODO: allow multiple candidates
+    candidates = []
     if line.startswith('  | '):
+        print("  table line")
         line = line[4:]
         # There is a high risk we'd erroneously match fund mentioned in a proposal.
         # So we're very stric as to what we accept.
@@ -406,68 +411,119 @@ def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> 
         #   "FUND_NAME" followed by empty columns
         line_upper = line.upper()
         if line_upper.startswith('REGISTRANT:'):
+            print("  dropping registrant")
             line = line[11:]
         elif line.startswith('FUND NAME:'):
+            print("  dropping fund name")
             line = line[10:]
         elif line.startswith('FUND:'):
+            print("  dropping fund")
             line = line[5:]
         cells = line_upper.split('|')
         rest = "".join(cells[1:]).strip().upper()
         if rest:
+            has_junk = True
+            print("  junk after first cell: " + rest)
             # Junk after the first cell, probably a vote line.
             if 'ITEM' in rest and ('EXHIBIT' in rest or 'EX ' in rest):
                 # Exception for 0001314414-0001580642-18-003578.txt,
                 # where a cell contains "Item 1, Exhibit 17".
-                pass
-            if rest.startswith('FUND NAME'):
+                print("  exception for item/exhibit")
+                has_junk = False
+            elif rest.startswith('FUND NAME'):
                 # 0001355064-0001580642-18-004117.txt
+                print("  exception for fund name")
                 line = rest[9:].strip()
                 if line.startswith('-'):
                     line = line[1:].strip()
-                # TODO: 0001644419-0001580642-18-004201.txt
-            else:
+                has_junk = False
+            pvr_index = rest.find('PROXY VOTING RECORD')
+            if pvr_index >= 0:
+                print("  exception for proxy voting record")
+                line = rest[:pvr_index].strip()
+                has_junk = False
+            if has_junk:
+                print("  skipping due to junk")
                 return None
         line = line.split('|')[0].strip()
+        if '-' in line:
+            print("  hypen detected, adding candidates")
+            # 0001314414-0001580642-18-003578.txt
+            # Consider subparts in "Registrant: NORTHERN LIGHTS FUND TRUST - Alphacore Absolute Fund"
+            for part in line.split('-'):
+                candidates.append(part)  # XXX this is done in match_fund, do it only in one place
+        candidates.append(line)
+    else:
+        candidates.append(line)
 
-    print(f"  matching: {line}")
-    match = match_fund(series, normalize_fund(line))
-    if match is not None:
-        return lines[index], match[0], match[1]
+    # Sort candidates, longest first
+    candidates.sort(key=lambda x: len(x), reverse=True)
+
+    for candidate in candidates:
+        match = match_fund(series, normalize_fund(candidate))
+        if match is not None:
+            print(f"  candidate: {candidate}")
+            print(f"  matched({match[0]}): {match[1]}")
+            return lines[index], match[0], match[1]
 
     return None
 
 
-def find_fund_name_in_lines(lines: list[str], start_index: int, series: list[Fund]) -> tuple[str, str, Fund]:
+def find_fund_line(index: int, fund_lines: list[tuple[int, tuple[str, str, Fund]]]) -> int:
+    # Dichotomy search to find the fund line at or immediately before index
+    if not fund_lines:
+        return -1
+    left = 0  # 0
+    right = len(fund_lines)
+    print(f"Searching for {index} in [{left},{right})")
+    while left < right:
+        print(f"left={left} right={right}")
+        mid = (left + right) // 2
+        if fund_lines[mid][0] <= index:
+            print(f"after {mid}, {fund_lines[mid][0]} < {index}")
+            left = mid + 1
+        else:
+            print(f"before {mid}, {fund_lines[mid][0]} >= {index}")
+            right = mid
+    result = max(0, left - 1)
+    if fund_lines[result][0] > index:
+        return -1
+    return result
 
-    if '|' in lines[start_index]:
-        # Look for the fund name in the first cell of a table (0001479599-0001144204-18-046418.txt)
-        cells = lines[start_index].split('|')
-        match = match_fund(series, normalize_fund(cells[1]))
-        if match is not None:
-            return lines[start_index], match[0], match[1]
 
-    index = start_index - 1
-    while index >= 0:
-        line_upper = lines[index].upper()
-        if "NO PROXY VOTING ACTIVITY" in line_upper:
-            break
-        if "NOT CAST ANY PROXY VOTES" in line_upper:
-            break
-        match = find_fund_name_in_line(lines, index, series)
-        if match is not None:
-            return match
-        index -= 1
+class TestFindFundLine(unittest.TestCase):
 
-    # If we reach the start of the file and there is a single fund, assume it is it.
-    if len(series) == 1:
-        return '0', '', series[0]
-
-    print(f"Fatal: fund not identified")
-    exit(1)
+    def test_find_fund_line(self):
+        fund_lines = [
+            (0, ('FUND A', '', Fund('FUND A', []))),
+            (5, ('FUND B', '', Fund('FUND B', []))),
+            (10, ('FUND C', '', Fund('FUND C', []))),
+        ]
+        assert find_fund_line(0, []) == -1
+        assert find_fund_line(0, fund_lines) == 0
+        assert find_fund_line(1, fund_lines) == 0
+        assert find_fund_line(4, fund_lines) == 0
+        assert find_fund_line(5, fund_lines) == 1
+        assert find_fund_line(6, fund_lines) == 1
+        assert find_fund_line(9, fund_lines) == 1
+        assert find_fund_line(10, fund_lines) == 2
+        assert find_fund_line(11, fund_lines) == 2
+        assert find_fund_line(15, fund_lines) == 2
 
 
 def split_sections(series: list[Fund], filing: str):
     lines = filing.split('\n')
+
+    # Do a first pass on the file to identify lines that are likely to contain fund names.
+    fund_lines = []
+    for i in range(len(lines)):
+        match = find_fund_name_in_line(lines, i, series)
+        if match is not None:
+            fund_lines.append((i, match))
+    print(f"Found {len(fund_lines)} potential fund lines")
+    for i, match in fund_lines:
+        print(f"{str(i).rjust(8)}: {match}")
+
     split_method, blocks = split_blocks(lines)
     print(f"Found {len(blocks)} blocks by method {split_method}")
     # print(json_dumps(blocks, indent=2))
@@ -495,22 +551,32 @@ def split_sections(series: list[Fund], filing: str):
                 if not found:
                     break
                 section_end += 1
-            # Find the fund name, going backward from the needle line.
-            # Working line by line simplifies detection as the fund may occur inside a block.
-            fund_text_matched, fund_method, fund = find_fund_name_in_lines(lines, needle_index, series)
-            print(f"Fund: <{fund}>")
-            print(f"Matched: {fund_text_matched}")
-            print(f"Method: {fund_method}")
             section_blocks = blocks[section_start:section_end]
             print(f"Section: blocks {section_start}-{section_end}")
             print(json_dumps(section_blocks, indent=2))
-            sections.append({
-                'fund': fund,
-                'blocks': section_blocks,
-                'fund_text_matched': fund_text_matched,
-                'split_method': split_method,
-                'fund_method': fund_method,
-            })
+            # Find the fund name.
+            fund_line_index = find_fund_line(needle_index, fund_lines)
+            if fund_line_index > 0:
+                print(f"Fund line index: {fund_line_index}")
+                line, match = fund_lines[fund_line_index]
+                print(f"Line number in filing: {line}")
+                fund_text_matched, fund_method, fund = match
+                print(f"Fund: <{fund}>")
+                print(f"Matched: {fund_text_matched}")
+                print(f"Method: {fund_method}")
+                sections.append({
+                    'fund': fund,
+                    'blocks': section_blocks,
+                    'fund_text_matched': fund_text_matched,
+                    'split_method': split_method,
+                    'fund_method': fund_method,
+                })
+            else:
+                print("WARNING: fund line not identified")
+                sections.append({
+                    'blocks': section_blocks,
+                    'split_method': split_method,
+                })
         section_start = section_end
     return sections
 
@@ -629,7 +695,28 @@ def split_filings():
 
 # main
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        split_filings()
+    parser = argparse.ArgumentParser(
+        prog='split_blocks',
+        description='Split blocks from filings')
+    parser.add_argument('-c', '--clear', action='store_true')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('-t', '--test', action='store_true')
+    parser.add_argument('filings', metavar='FILING', type=str, nargs='*',
+                        help='names of the filings to split (no path, with ext)')
+    args = parser.parse_args()
+
+    if args.test:
+        sys.argv = sys.argv[:1]  # unittest.main() will not recognize the --test argument
+        unittest.main()
+        exit(0)
+
+    if args.clear:
+        for filename in os.listdir('blocks'):
+            if filename.endswith('.json'):
+                os.remove(os.path.join('blocks', filename))
+
+    if args.filings:
+        split_filing(args.filings, "/dev/stdout")
     else:
-        split_filing(sys.argv[1], "/dev/stdout")
+        split_filings()
+    exit(0)
