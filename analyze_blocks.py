@@ -2,11 +2,11 @@ import argparse
 import json
 import os
 import sqlite3
-from ollama import Client
+from openai import OpenAI
+
 
 year = 2018
-model = 'llama3:70b'
-# model = 'mixtral:8x7b' # much worse than llama3:70b
+model = "gpt-4o-mini"
 conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
 conn.row_factory = sqlite3.Row
 conn.execute("""
@@ -48,7 +48,7 @@ Input:
 prompt_suffix = """
 """.strip()
 
-client = Client(host=os.environ.get('OLLAMA_HOST', 'http://127.0.0.1:11434'))
+client = OpenAI()
 
 
 def analyze_blocks(row):
@@ -85,31 +85,33 @@ def analyze_blocks(row):
             content = prompt_prefix + "\n" + block_text + "\n" + prompt_suffix
             # print(block_text)
             # print(f"  prompt size: {len(content)}")
-            response = client.chat(model=model, messages=[
+            completion = client.chat.completions.create(model=model, messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant."
+                },
                 {
                     'role': 'user',
                     'content': content,
                 },
             ])
-            vote = response['message']['content']
+            vote = completion.choices[0].message.content
             print(f"{fund_name}: {vote}")
-            vote = vote.lower().strip()
             # Validate and store vote
-            if vote in ['for', 'against']:
-                conn.execute("""
-                    INSERT INTO votes (
-                        url,
-                        split_method, block_start, block_text,
-                        fund_method, fund_name, ticker_symbol, fund_line,
-                        vote
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
+            conn.execute("""
+                INSERT INTO votes (
                     url,
                     split_method, block_start, block_text,
-                    fund_method, fund_name, ", ".join(ticker_symbols), fund_text_matched,
+                    fund_method, fund_name, ticker_symbol, fund_line,
                     vote
-                ))
-                conn.commit()
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                url,
+                split_method, block_start, block_text,
+                fund_method, fund_name, ", ".join(ticker_symbols), fund_text_matched,
+                vote
+            ))
+            conn.commit()
 
 
 if __name__ == '__main__':

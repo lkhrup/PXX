@@ -7,7 +7,7 @@ Linux/MacOS:
 ```sh
 python -m venv .venv
 source .venv/bin/activate
-pip install requests lxml
+pip install requests lxml openai
 ```
 
 Windows:
@@ -23,7 +23,8 @@ pip install requests lxml
 ```sh
 python3 fetch_filings.py
 python3 split_blocks.py
-time OLLAMA_HOST=http://127.0.0.1:11434 python3 analyze_blocks.py
+export OPENAI_API_KEY="sk-..."
+python3 analyze_blocks.py
 python3 export.py > export.csv
 ```
 
@@ -34,6 +35,5 @@ Outline:
 1. Fetch all filings from the SEC website, saving filing metadata in a database.
 2. Split the filings (converted to plain text) into blocks mentioning the security of interest;
    for each block, we identify the fund by going backwards in the text until we find a fund name.
-3. Analyze the blocks using an LLM (ollama server, llama3:70B),
-   and inject votes into the database.
+3. Analyze the blocks using an LLM and inject votes into the database.
 4. Export the results to a CSV file.
