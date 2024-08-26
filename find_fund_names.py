@@ -173,7 +173,9 @@ class FundMatcher:
         if text in self.blacklist:
             return None
         if (text.endswith('INC.') or text.endswith('INCORPORATED') or text.endswith('CORP.')
-                or text.endswith('CO.') or text.endswith('COMPANY')) or text.endswith('LTD'):
+                or text.endswith('CO.') or text.endswith('COMPANY')) or text.endswith('LTD') \
+                or text.endswith('LIMITED') or text.endswith('LLC') or text.endswith('CORP') \
+                or text.endswith('PLC') or text.endswith('CORPORATION') or text.endswith('LTD.'):
             return None
         if 'INSTITUTIONAL CLIENT' in text or 'WHETHER FUND' in text or 'C/O ' in text:
             return None
@@ -209,63 +211,17 @@ class FundMatcher:
         tweaks = []
         candidates = []
         if line_stripped.startswith("="):
-            # Title, potentially multi-lines
-            line = line_stripped.replace('=', '').strip()
-            title_start = index
-            while title_start > 0:
-                title_line = self.lines[title_start - 1].strip()
-                if not title_line.startswith('='):
-                    break
-                line = title_line.replace('=', '').strip() + " " + line
-                title_start -= 1
-            candidates.append(line)
-            tweaks.append("title")
+            self.process_title(candidates, index, line_stripped, tweaks)
         elif line.startswith('  | '):
-            tweaks.append("row")
-            if self.verbose:
-                print(f"T row")
-            line = line[4:]
-            # There is a high risk we'd erroneously match a fund mentioned in a proposal.
-            # So we're very strict as to what we accept.
-            cells = line.split('|')
-            rest = "".join(cells[1:]).strip().upper()
-            if rest:
-                has_junk = True
-                # Junk after the first cell, probably a vote line.
-                if 'ITEM' in rest and ('EXHIBIT' in rest or 'EX ' in rest):
-                    # Exception for 0001314414-0001580642-18-003578.txt,
-                    # where a cell contains "Item 1, Exhibit 17".
-                    tweaks.append("trailing(itemex)")
-                    has_junk = False
-                elif rest.startswith('FUND NAME'):
-                    # 0001355064-0001580642-18-004117.txt
-                    tweaks.append("trailing(fund name)")
-                    line = rest[9:].strip()
-                    if line.startswith('-'):
-                        line = line[1:].strip()
-                    has_junk = False
-                pvr_index = rest.find('PROXY VOTING RECORD')
-                if pvr_index >= 0:
-                    tweaks.append("trailing(pvr)")
-                    line = rest[:pvr_index].strip()
-                    has_junk = False
-                if has_junk:
-                    for cell in cells[1:]:
-                        text = cell.strip()
-                        if text:
-                            candidates.append(text)
-            line = line.split('|')[0].strip()
-            candidates.append(line)
+            self.process_row(candidates, line, tweaks)
         else:
             candidates.append(line)
-        # print(f"T candidates: {candidates}")
 
-        # Split at '- ' to add more candidates.
-        # We don't split at '-' because fund names may contain '-'.
-        # We don't split at ' - ' because the first space may be missing.
+        # Split at '-' to add more candidates.
+        # We try the longest candidates first, so it does not matter if a fund name is split.
         for i in range(len(candidates)):
-            if '- ' in candidates[i]:
-                parts = candidates[i].split('- ')
+            if '-' in candidates[i]:
+                parts = candidates[i].split('-')
                 for j, part in enumerate(parts):
                     candidates.append(part)
 
@@ -280,56 +236,7 @@ class FundMatcher:
             if len(text) > self.max_series_length + 20:
                 continue
 
-            text_upper = text.upper()
-            tweaks2 = tweaks.copy()
-            important = False
-
-            m = re.search("\s*-?\s*SUB-?ADVIS[OE]R", text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'sub-adviser' in {text}")
-                important = True
-                text = text[:m.start()].strip()
-                tweaks2.append("trailing(subadvisor)")
-
-            # Identify some common leading patterns
-            m = re.match('REGISTRANT\s*:\s*', text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'Registrant:' in {text}")
-                important = True
-                text = text[m.end():]
-                tweaks2.append("leading(registrant)")
-            m = re.match('FUND(\s+NAME)?\s*:\s*', text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'fund name:' in {text}")
-                important = True
-                text = text[m.end():]
-                tweaks2.append("leading(fund name)")
-
-            # Remove some common trailing patterns
-            m = re.search(r'-?\s*CLASS\b', text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'class' in {text}")
-                text = text[:m.start()].strip()
-                tweaks2.append("trailing '- class'")
-            m = re.search(r'\bEFFECTIVE\b', text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'effective' in {text}")
-                text = text[:m.start()].strip()
-                tweaks2.append("trailing(effective)")
-            m = re.search(r'\bITEM\b', text_upper)
-            if m is not None:
-                if self.verbose:
-                    print(f"T   matched 'item' in {text}")
-                text = text[:m.start()].strip()
-                tweaks2.append("trailing(item)")
-            paren_index = text.find('(')
-            if paren_index > 0:
-                text = text[:paren_index].strip()
+            text, important, tweaks2 = self.process_candidate(text, tweaks)
 
             fm = self.match(text, important)
             if fm is not None:
@@ -339,6 +246,106 @@ class FundMatcher:
                 return fm
 
         return None
+
+    def process_title(self, candidates, index, line_stripped, tweaks):
+        # Title, potentially multi-lines
+        line = line_stripped.replace('=', '').strip()
+        title_start = index
+        while title_start > 0:
+            title_line = self.lines[title_start - 1].strip()
+            if not title_line.startswith('='):
+                break
+            line = title_line.replace('=', '').strip() + " " + line
+            title_start -= 1
+        candidates.append(line)
+        tweaks.append("title")
+
+    def process_row(self, candidates, line, tweaks):
+        tweaks.append("row")
+        if self.verbose:
+            print(f"T row")
+        line = line[4:]
+        # There is a high risk we'd erroneously match a fund mentioned in a proposal.
+        # So we're very strict as to what we accept.
+        cells = line.split('|')
+        rest = "".join(cells[1:]).strip().upper()
+        if rest:
+            has_junk = True
+            # Junk after the first cell, probably a vote line.
+            if 'ITEM' in rest and ('EXHIBIT' in rest or 'EX ' in rest):
+                # Exception for 0001314414-0001580642-18-003578.txt,
+                # where a cell contains "Item 1, Exhibit 17".
+                tweaks.append("trailing(itemex)")
+                has_junk = False
+            elif rest.startswith('FUND NAME'):
+                # 0001355064-0001580642-18-004117.txt
+                tweaks.append("trailing(fund name)")
+                line = rest[9:].strip()
+                if line.startswith('-'):
+                    line = line[1:].strip()
+                has_junk = False
+            pvr_index = rest.find('PROXY VOTING RECORD')
+            if pvr_index >= 0:
+                tweaks.append("trailing(pvr)")
+                line = rest[:pvr_index].strip()
+                has_junk = False
+            if has_junk:
+                for cell in cells[1:]:
+                    text = cell.strip()
+                    if text:
+                        candidates.append(text)
+        line = line.split('|')[0].strip()
+        candidates.append(line)
+
+    def process_candidate(self, text: str, tweaks: list[str]) -> tuple[str, bool, list[str]]:
+        text_upper = text.upper()
+        tweaks2 = tweaks.copy()
+        important = False
+        m = re.search("\s*-?\s*SUB-?ADVIS[OE]R", text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'sub-adviser' in {text}")
+            important = True
+            text = text[:m.start()].strip()
+            tweaks2.append("trailing(subadvisor)")
+        # Identify some common leading patterns
+        m = re.match('REGISTRANT\s*:\s*', text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'Registrant:' in {text}")
+            important = True
+            text = text[m.end():]
+            tweaks2.append("leading(registrant)")
+        m = re.match('FUND(\s+NAME)?\s*:\s*', text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'fund name:' in {text}")
+            important = True
+            text = text[m.end():]
+            tweaks2.append("leading(fund name)")
+        # Remove some common trailing patterns
+        m = re.search(r'-?\s*CLASS\b', text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'class' in {text}")
+            text = text[:m.start()].strip()
+            tweaks2.append("trailing '- class'")
+        m = re.search(r'\bEFFECTIVE\b', text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'effective' in {text}")
+            text = text[:m.start()].strip()
+            tweaks2.append("trailing(effective)")
+        m = re.search(r'\bITEM\b', text_upper)
+        if m is not None:
+            if self.verbose:
+                print(f"T   matched 'item' in {text}")
+            text = text[:m.start()].strip()
+            tweaks2.append("trailing(item)")
+        paren_index = text.find('(')
+        if paren_index > 0:
+            text = text[:paren_index].strip()
+        return text, important, tweaks2
 
 
 class TestFundMatcher(unittest.TestCase):
@@ -591,7 +598,7 @@ def process_filing(cik, filename, verbose=False):
         if len(series) == 1:
             if verbose:
                 print("I No fund line found, defaulting to single series")
-            add_match(0, FundMatch(series[0], "default"))
+            add_match(0, FundMatch(series[0], ["default"]))
         else:
             if verbose:
                 print(f"W {filename}: no funds found, {len(series)} series")
