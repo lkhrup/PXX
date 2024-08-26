@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Funds for Filing</title>
+    <style>
+        html {
+            font-size: 20px;
+        }
+
+        .name, .matched {
+            text-transform: uppercase;
+        }
+        .aligned {
+            font-size: 10px;
+        }
+
+        tr.enabled .matched {
+            color: darkred;
+        }
+
+        tr:hover td {
+            background: lightgray;
+        }
+
+        tr.disabled td {
+            color: gray;
+        }
+
+        /* make an A fill a TD */
+        td.fill {
+            position: relative;
+        }
+        td.center {
+            text-align: center;
+        }
+        td.pre {
+            white-space: pre;
+            font-family: monospace;
+        }
+
+        td.fill a {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-decoration: none;
+            color: black;
+        }
+
+        td:hover a {
+            background: darkgray;
+        }
+
+        .nav {
+            display: flex;
+            min-height: 20px;
+            gap: 10px;
+        }
+
+        .nav.top {
+            margin-bottom: 20px;
+        }
+
+        .nav.bottom {
+            margin-top: 20px;
+        }
+
+        .nav a {
+            flex: 1;
+            font-weight: bold;
+            display: block;
+            padding: 10px;
+            background-color: lightgray;
+        }
+
+        .nav a + a {
+            text-align: right;
+        }
+
+        .toolbox {
+            position: fixed;
+            right: 10px;
+            padding: 10px;
+            background: lightblue;
+            box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        /* make input[type="checkbox"] look like a button */
+        input[type="checkbox"] {
+            position: absolute;
+            visibility: hidden;
+            opacity: 0;
+        }
+
+        input[type=checkbox] + label {
+            padding: 0 10px;
+            color: #ccc;
+        }
+
+        input[type=checkbox]:checked + label {
+            color: #f00;
+            font-weight: bold;
+            background: darkgray;
+        }
+
+
+    </style>
+    <script>
+
+        var cik = '{{ filing.cik }}';
+
+        // Save scroll position in localStorage using the CIK as a key
+        function saveScrollPosition() {
+            localStorage.setItem('scrollPosition_' + cik, window.scrollY);
+        }
+
+        // Restore scroll position from localStorage using the CIK as a key
+        function restoreScrollPosition() {
+            const scrollPosition = localStorage.getItem('scrollPosition_' + cik);
+            if (scrollPosition !== null) {
+                window.scrollTo(0, parseInt(scrollPosition, 10));
+            }
+        }
+
+        window.onload = function () {
+            // For each tr, find the td.pre and td.method.
+            // If the text of td.method contains common(length, l1, l2, r1, r2),
+            // add divs with the aligned text.
+            document.querySelectorAll('tr').forEach(function (tr) {
+                const tdPre = tr.querySelector('td.pre');
+                const tdMethod = tr.querySelector('td.method');
+                if (tdPre && tdMethod) {
+                    const method = tdMethod.textContent;
+                    const methodIndex = method.indexOf('common(');
+                    if (methodIndex !== -1) {
+                        const closeParenIndex = method.indexOf(')', methodIndex);
+                        const args = method.substring(methodIndex + 7, closeParenIndex);
+                        const [length, l1, l2, r1, r2] = args.match(/\d+/g).map(s => parseInt(s, 10));
+                        const name = tdPre.querySelector('div.name');
+                        const matched = tdPre.querySelector('div.matched');
+                        if (name && matched) {
+                            const left = Math.min(l1, l2);
+                            const nameText = name.textContent;
+                            const nameTextAlphanum = nameText.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                            const matchedText = matched.textContent;
+                            const matchedTextAlphanum = matchedText.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                            // Add spans with aligned text.
+                            const divName = document.createElement('div');
+                            divName.className = 'name aligned';
+                            const nameTextNode = document.createElement('b');
+                            nameTextNode.append(nameTextAlphanum.slice(l2, l2+length));
+                            if (l1 > left) {
+                                divName.append(' '.repeat(l1 - left));
+                            }
+                            divName.append(nameTextAlphanum.slice(0, l2), nameTextNode);
+                            if (r2 > 0) {
+                                divName.append(nameTextAlphanum.slice(l2+length));
+                            }
+                            tdPre.appendChild(divName);
+                            const divMatched = document.createElement('div');
+                            divMatched.className = 'matched aligned';
+                            const matchedTextNode = document.createElement('b');
+                            matchedTextNode.append(matchedTextAlphanum.slice(l1, l1+length));
+                            if (l2 > left) {
+                                divMatched.append(' '.repeat(l2 - left));
+                            }
+                            divMatched.append(matchedTextAlphanum.slice(0, l1), matchedTextNode);
+                            if (r1 > 0) {
+                                divMatched.append(matchedTextAlphanum.slice(l1+length));
+                            }
+                            tdPre.appendChild(divMatched);
+                        }
+                    }
+                }
+            });
+
+            restoreScrollPosition();
+
+
+        };
+        window.addEventListener("unload", function (event) {
+            saveScrollPosition();
+        });
+
+        // Keyboard navigation
+        document.addEventListener("keydown", function (event) {
+            if (event.code === "ArrowLeft") {
+                const navLeft = document.getElementById("nav-left");
+                if (navLeft) {
+                    window.location.href = navLeft.href;
+                }
+            } else if (event.code === "ArrowRight") {
+                const navRight = document.getElementById("nav-right");
+                if (navRight) {
+                    window.location.href = navRight.href;
+                }
+            }
+        });
+
+        // Toggle individual fund
+        function toggleFund(fundId, cik) {
+            fetch('/toggle_fund', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    id: fundId,
+                    cik: cik
+                })
+            }).then(response => {
+                if (response.ok) {
+                    window.location.reload(); // Reload the page to reflect changes
+                } else {
+                    alert("Failed to toggle fund");
+                }
+            });
+        }
+
+        function toggleSelectedRange() {
+            // Get all checkboxes
+            const checkboxes = document.querySelectorAll('input[name="select_fund"]:checked');
+            if (checkboxes.length < 2) {
+                alert("Please select at least two rows to define a range.");
+                return;
+            }
+
+            // Get the IDs of the first and last selected rows
+            const firstId = parseInt(checkboxes[0].value, 10);
+            const lastId = parseInt(checkboxes[checkboxes.length - 1].value, 10);
+
+            // Send a POST request to the server to toggle the range
+            fetch('/toggle_range', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    cik: '{{ filing.cik }}',
+                    first_id: firstId,
+                    last_id: lastId
+                })
+            }).then(response => {
+                if (response.ok) {
+                    window.location.reload(); // Reload the page to reflect changes
+                } else {
+                    alert("Failed to toggle range");
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+<h1>Funds for Filing: {{ filing.display_name }}</h1>
+
+<a href="{{ url_for('filings_list') }}">Back to Filing List</a>
+
+<!-- Navigation Links -->
+<div class="nav top">
+    {% if previous_filing %}
+    <a id="nav-left" href="{{ url_for('filing_funds', cik=previous_filing['cik']) }}">&lt;&lt; {{ previous_filing.display_name }}</a>
+    {% endif %}
+    {% if next_filing %}
+    <a id="nav-right" href="{{ url_for('filing_funds', cik=next_filing['cik']) }}">{{ next_filing.display_name }} &gt;&gt;</a>
+    {% endif %}
+</div>
+
+<div class="toolbox">
+    <button onclick="toggleSelectedRange()">Toggle Selected Range</button>
+</div>
+
+<table border="1">
+    <thead>
+    <tr>
+        <th>ID</th>
+        <th>Ordinal</th>
+        <th>Series Name</th>
+        <th>Ticker Symbol</th>
+        <th>Range</th>
+        <th>Method</th>
+        <th>Disabled</th>
+        <th>Toggle Disabled</th>
+        <td></td>
+    </tr>
+    </thead>
+    <tbody>
+    {% for fund in funds %}
+    <tr class="{% if fund.disabled %}disabled{% else %}enabled{% endif %}">
+        <td>{{ fund.id }}</td>
+        <td>{{ fund.ordinal }}</td>
+        <td class="pre"><div class="name">{{ fund.series_name }}</div><div class="matched">{{ fund.fund_text }}</div><div class="plain">{{ fund.matched_text}}</div></td>
+        <td class="center">{{ fund.ticker_symbol }}</td>
+        <td class="center">{{ fund.first_line }}-{{ fund.last_line }}</td>
+        <td class="method">{{ fund.method }}</td>
+        <td class="center">{{ 'Yes' if fund.disabled else 'No' }}</td>
+        <td class="fill"><a href="javascript:void(0);"
+                            onclick="toggleFund({{ fund.id }}, '{{ filing.cik }}')">Toggle</a></td>
+        <td><input type="checkbox" name="select_fund" value="{{ fund.id }}" id="select-{{ fund.id }}"><label
+                for="select-{{ fund.id }}">✓</label></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- Navigation Links at the Bottom -->
+<div class="nav bottom">
+    {% if previous_filing %}
+    <a href="{{ url_for('filing_funds', cik=previous_filing['cik']) }}">&lt;&lt; {{ previous_filing.display_name }}</a>
+    {% endif %}
+    {% if next_filing %}
+    <a href="{{ url_for('filing_funds', cik=next_filing['cik']) }}">{{ next_filing.display_name }} &gt;&gt;</a>
+    {% endif %}
+</div>
+</body>
+</html>
