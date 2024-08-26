@@ -5,14 +5,9 @@ import sqlite3
 import sys
 import unittest
 
-from utils import ensure_text_filing, longest_common_substring
+from utils import ensure_text_filing, longest_common_substring, levenshtein_distance
 
 year = 2018
-conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
-conn.row_factory = sqlite3.Row
-
-
-os.makedirs('plain', exist_ok=True)
 
 
 class Fund:
@@ -67,30 +62,6 @@ def normalize_fund(fund: str) -> str:
     fund = re.sub(' +', ' ', fund)
     fund = fund.strip()
     return fund
-
-
-def levenshtein_distance(str1, str2):
-    # Create a matrix to store distances
-    m, n = len(str1), len(str2)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-
-    # Initialize the matrix
-    for i in range(m + 1):
-        dp[i][0] = i
-    for j in range(n + 1):
-        dp[0][j] = j
-
-    # Fill the matrix
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if str1[i - 1] == str2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]  # No change needed
-            else:
-                dp[i][j] = min(dp[i - 1][j] + 1,  # Deletion
-                               dp[i][j - 1] + 1,  # Insertion
-                               dp[i - 1][j - 1] + 1)  # Substitution
-
-    return dp[m][n]
 
 
 class FundMatcher:
@@ -159,7 +130,8 @@ class FundMatcher:
         pos4 = len(best_match.alphanum) - (pos2 + length)
         if self.verbose:
             print(f"T   {pos1, len(alphanum), pos3} {pos2, len(best_match.alphanum), pos4}")
-        return FundMatch(best_match, [f"common{(length, pos1, pos2, pos3, pos4)}"])
+        ld = levenshtein_distance(best_match.name, title)
+        return FundMatch(best_match, [f"common{(length, pos1, pos2, pos3, pos4)}", f"levenshtein({ld})"])
 
     def match(self, text: str, important: bool) -> FundMatch | None:
         original_text = text
@@ -471,7 +443,7 @@ def extract_series(preamble: str) -> list[Fund]:
     return series
 
 
-def process_filing(cik, filename, verbose=False):
+def process_filing(conn, cik, filename, verbose=False):
     if verbose:
         print(f"\n\n\n---------- {filename} ----------\n")
     with open(filename, 'r', encoding="utf-8") as f:
@@ -495,7 +467,7 @@ def process_filing(cik, filename, verbose=False):
             series_words.remove(word)
 
     # Detect html filing and convert to text
-    text_filing = ensure_text_filing(filename, filing)
+    text_filing, fmt = ensure_text_filing(filename, filing)
 
     # Identify lines that are likely to contain fund names.
     lines = text_filing.split('\n')
@@ -522,7 +494,7 @@ def process_filing(cik, filename, verbose=False):
     last_fund = None
     last_fund_id = None
 
-    def add_match(line_no: int, match: FundMatch):
+    def add_match(line_no: int, match: FundMatch | None):
         nonlocal last_fund, last_fund_id
 
         # Update last_fund.last_line if needed
@@ -617,25 +589,28 @@ def process_filing(cik, filename, verbose=False):
         for match in matches:
             print(f"I [{match.start_line},{';'.join(match.method)}] found {match.fund} as {match.text}")
 
-    # Update filing with num_lines
-    conn.execute("UPDATE filings SET num_lines = ? WHERE cik = ? AND filename = ?", (num_lines, cik, filename))
-
     if matches:
-        add_match(i, None)  # Update last_line of the last match
-        conn.execute("COMMIT")
+        # Update last_line of the last match
+        add_match(i, None)
+
+    # Update filing with num_lines
+    conn.execute("UPDATE filings SET format = ?, num_lines = ? WHERE cik = ? AND filename = ?",
+                 (fmt, num_lines, cik, filename))
+
+    conn.execute("COMMIT")
 
 
-def process_filings(filings, verbose=False):
+def process_filings(conn, filings, verbose=False):
     for filename in filings:
         cik = os.path.basename(filename).split('-')[0]
-        process_filing(cik, filename, verbose)
+        process_filing(conn, cik, filename, verbose)
 
 
-def process_all_filings(verbose=False):
+def process_all_filings(conn, verbose=False):
     for filename in os.listdir('filings'):
         if filename.endswith('.txt'):
             cik = filename.split('-')[0]
-            process_filing(cik, os.path.join('filings', filename), verbose)
+            process_filing(conn, cik, os.path.join('filings', filename), verbose)
 
 
 def main():
@@ -654,6 +629,8 @@ def main():
         unittest.main()
         exit(0)
 
+    conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
+    conn.row_factory = sqlite3.Row
     conn.execute("""
     CREATE TABLE IF NOT EXISTS funds (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -666,21 +643,22 @@ def main():
         method TEXT,
         fund_name TEXT,
         fund_text TEXT,
-        disabled boolean DEFAULT FALSE
+        state TEXT DEFAULT 'KEEP',
+        flagged BOOLEAN DEFAULT FALSE
     );
     """)
-    conn.commit()
-
     if args.clear:
         conn.execute("DELETE FROM funds")
+    conn.commit()
 
     if args.filings:
-        process_filings(args.filings, verbose=args.verbose)
+        process_filings(conn, args.filings, verbose=args.verbose)
     else:
-        process_all_filings(verbose=args.verbose)
+        process_all_filings(conn, verbose=args.verbose)
     exit(0)
 
 
 # main
 if __name__ == '__main__':
+    os.makedirs('plain', exist_ok=True)
     main()

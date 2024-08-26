@@ -1,15 +1,17 @@
 import os
+import re
 import unittest
 
 from html_to_plain import html_to_plain
 
 
-def ensure_text_filing(filename: str, filing: str) -> str:
+def ensure_text_filing(filename: str, filing: str) -> tuple[str, str]:
     filename = os.path.basename(filename)
     filing = filing.strip()
     first_line_end = filing.find('\n')
     first_line = filing[:first_line_end].lower()
     if first_line.startswith('<html>') or first_line.startswith('<!doctype html'):
+        fmt = 'html'
         plain_file = os.path.join('plain', filename)
         if os.path.exists(plain_file):
             print("Using cached HTML conversion")
@@ -32,11 +34,12 @@ def ensure_text_filing(filename: str, filing: str) -> str:
             filing = f.read()
     else:
         print("Using plain text filing")
+        fmt = 'plain'
         plain_file = os.path.join('plain', filename)
         if not os.path.exists(plain_file):
             with open(plain_file, 'w', encoding="utf-8") as f:
                 f.write(filing)
-    return filing
+    return filing, fmt
 
 
 def levenshtein_distance(str1, str2):
@@ -103,3 +106,35 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(length, 3)
         self.assertEqual(s1[position_s1:position_s1 + length], "abc")
         self.assertEqual(s2[position_s2:position_s2 + length], "abc")
+
+
+def align_texts(fund):
+    """
+    Align the `series_name` and `matched_text` based on the `method`.
+    """
+    method = fund['method']
+    if 'common(' not in method:
+        return (None, None)
+    start = method.index('common(') + len('common(')
+    end = method.index(')', start)
+    args = method[start:end]
+    length, l1, l2, r1, r2 = map(int, args.split(','))
+    left = min(l1, l2)
+
+    name_text = fund['series_name']
+    matched_text = fund['fund_text']
+    name_text_alphanum = re.sub(r'[^A-Z0-9]', '', name_text.upper())
+    matched_text_alphanum = re.sub(r'[^A-Z0-9]', '', matched_text.upper())
+
+    aligned_name = (
+        ' ' * (l1 - left) + name_text_alphanum[:l2] +
+        f"<b>{name_text_alphanum[l2:l2+length]}</b>" +
+        name_text_alphanum[l2+length:]
+    )
+    aligned_matched = (
+        ' ' * (l2 - left) + matched_text_alphanum[:l1] +
+        f"<b>{matched_text_alphanum[l1:l1+length]}</b>" +
+        matched_text_alphanum[l1+length:]
+    )
+
+    return aligned_name, aligned_matched

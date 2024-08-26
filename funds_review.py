@@ -1,7 +1,13 @@
-from flask import Flask, render_template, request, redirect, url_for
+import os
 import sqlite3
 
-app = Flask(__name__)
+from flask import Flask, render_template, make_response, redirect, url_for
+from flask import request
+from unpoly.up import Unpoly
+
+import find_fund_names
+from flask_adapter import FlaskAdapter
+from utils import align_texts
 
 DATABASE = '2018.sqlite'  # Path to your SQLite database file
 
@@ -12,15 +18,30 @@ def get_db_connection():
     return conn
 
 
+app = Flask(__name__)
+
+
+@app.before_request
+def before_request():
+    # Initialize Unpoly with the FlaskAdapter for each request
+    adapter = FlaskAdapter()
+    request.up = Unpoly(adapter)
+
+
 @app.route('/')
-def filings_list():
-    conn = get_db_connection()
-    filings = conn.execute('SELECT DISTINCT cik, display_name FROM filings').fetchall()
-    conn.close()
-    return render_template('filings.html', filings=filings)
+def index():
+    return render_template('index.html')
 
 
-@app.route('/filing/<string:cik>')
+@app.route('/update-content')
+def load_partial():
+    content = render_template('partials/content.html')
+    response = make_response(content)
+    response.headers['X-Up-Target'] = 'up-main'  # Specify the update target
+    return response
+
+
+@app.route('/filings/<string:cik>')
 def filing_funds(cik):
     conn = get_db_connection()
 
@@ -28,7 +49,7 @@ def filing_funds(cik):
     filing = conn.execute('SELECT * FROM filings WHERE cik = ?', (cik,)).fetchone()
 
     # Fetch funds related to the selected filing's CIK
-    funds = conn.execute('SELECT * FROM funds WHERE cik = ?', (cik,)).fetchall()
+    funds = conn.execute('SELECT * FROM funds WHERE cik = ? ORDER BY first_line', (cik,)).fetchall()
 
     # Fetch the previous and next CIKs
     previous_filing = conn.execute(
@@ -39,26 +60,76 @@ def filing_funds(cik):
     ).fetchone()
 
     conn.close()
-    return render_template('funds.html', funds=funds, filing=filing,
-                           previous_filing=previous_filing, next_filing=next_filing)
+
+    # Process text alignment in Python
+    processed_funds = []
+    for fund in funds:
+        name, matched = align_texts(fund)
+        processed_fund = dict(fund)
+        processed_fund['aligned_name'] = name
+        processed_fund['aligned_matched'] = matched
+        processed_fund['method'] = fund['method'].replace(';', '\n')
+        processed_funds.append(processed_fund)
+
+    return render_template(
+        'funds.html',
+        funds=processed_funds,
+        filing=filing,
+        previous_filing=previous_filing,
+        next_filing=next_filing,
+        processed=request.args.get('processed')
+    )
 
 
-@app.route('/toggle_fund', methods=['POST'])
-def toggle_fund():
+@app.route('/filings/<string:cik>/process')
+def process_filing(cik):
+    conn = get_db_connection()
+    filing = conn.execute('SELECT * FROM filings WHERE cik = ?', (cik,)).fetchone()
+    conn.execute('DELETE FROM funds WHERE cik = ?', (cik,))
+    filename = os.path.join('filings', filing['filename'])
+    find_fund_names.process_filing(conn, cik, filename, False)
+    conn.close()
+    return redirect(url_for('filing_funds', cik=cik, processed=True))
+
+
+@app.route('/filings')
+def filings_list():
+    conn = get_db_connection()
+    filings = conn.execute('SELECT DISTINCT cik, display_name FROM filings').fetchall()
+    conn.close()
+    return render_template('filings.html', filings=filings)
+
+
+@app.route('/toggle_fund_state', methods=['POST'])
+def toggle_fund_state():
     data = request.get_json()
     fund_id = data['id']
-    cik = data['cik']
 
     conn = get_db_connection()
+    conn.execute("""
+        UPDATE funds SET state = (
+            CASE WHEN state = 'KEEP' THEN 'SKIP'
+                 WHEN state = 'SKIP' THEN 'KEEP'
+                 ELSE state
+            END)
+        WHERE id = ?
+        """, (fund_id,))
+    conn.commit()
+    conn.close()
 
-    # Get the current value of the disabled flag for the specified fund
-    fund = conn.execute('SELECT disabled FROM funds WHERE id = ? AND cik = ?', (fund_id, cik)).fetchone()
+    return '', 204  # No Content response
 
-    # Toggle the disabled flag
-    new_disabled_value = not fund['disabled']
 
-    # Update the database
-    conn.execute('UPDATE funds SET disabled = ? WHERE id = ?', (new_disabled_value, fund_id))
+@app.route('/toggle_fund_flagged', methods=['POST'])
+def toggle_fund_flagged():
+    data = request.get_json()
+    fund_id = data['id']
+    value = data['value']
+
+    conn = get_db_connection()
+    conn.execute("""
+        UPDATE funds SET flagged = NOT flagged WHERE id = ? AND flagged = ?
+        """, (fund_id, value))
     conn.commit()
     conn.close()
 
@@ -74,13 +145,20 @@ def toggle_range():
 
     conn = get_db_connection()
 
-    # Fetch the current status of the first fund in the range to determine the action (enable/disable)
-    first_fund = conn.execute('SELECT disabled FROM funds WHERE id = ? AND cik = ?', (first_id, cik)).fetchone()
-    new_disabled_value = not first_fund['disabled']  # Toggle all to the opposite of the first one
+    # Identify the affected line range
+    first = conn.execute('SELECT first_line AS line FROM funds WHERE id = ? AND cik = ?', (first_id, cik)).fetchone()
+    last = conn.execute('SELECT last_line AS line FROM funds WHERE id = ? AND cik = ?', (last_id, cik)).fetchone()
 
     # Update all funds in the specified range
-    conn.execute('UPDATE funds SET disabled = ? WHERE id BETWEEN ? AND ? AND cik = ?',
-                 (new_disabled_value, first_id, last_id, cik))
+    conn.execute("""
+        UPDATE funds
+        SET state = (
+            CASE WHEN state = 'KEEP' THEN 'SKIP'
+                 WHEN state = 'SKIP' THEN 'KEEP'
+                 ELSE state
+            END)
+        WHERE cik = ? AND first_line BETWEEN ? AND ?""",
+                 (cik, first['line'], last['line']))
     conn.commit()
     conn.close()
 

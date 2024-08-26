@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS filings (
     file_date TEXT,
     cik TEXT,
     display_name TEXT,
+    note TEXT,
+    format TEXT,
     num_lines INTEGER
 );
 """)

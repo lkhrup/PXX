@@ -1,0 +1,82 @@
+<script>
+    context.cik = '{{ filing.cik }}';
+    context.processURL = '{{url_for("process_filing", cik=filing.cik)}}';
+</script>
+
+<h1>Funds for Filing: {{ filing.display_name }}</h1>
+<a href="{{ url_for('filings_list') }}">Back to Filing List</a>
+
+
+<div>
+<button onclick="up.render({ url: context.processURL, target: 'main' });">Process</button>
+{% if processed %}
+ <strong>Processed!</strong>
+{% endif %}
+</div>
+
+<!-- Navigation Links -->
+<div class="nav top">
+    {% if previous_filing %}
+    <a id="nav-left" up-history="true" href="{{ url_for('filing_funds', cik=previous_filing['cik']) }}">&lt;&lt; {{ previous_filing.display_name }}</a>
+    {% endif %}
+    {% if next_filing %}
+    <a id="nav-right" up-history="true" href="{{ url_for('filing_funds', cik=next_filing['cik']) }}">{{ next_filing.display_name }} &gt;&gt;</a>
+    {% endif %}
+</div>
+
+<div class="toolbox">
+    <button onclick="toggleSelectedRange()">Toggle Selected Range</button>
+</div>
+
+<table border="1">
+    <thead>
+    <tr>
+        <th>ID</th>
+        <th>Ordinal</th>
+        <th>Series Name</th>
+        <th>Ticker Symbol</th>
+        <th>Range</th>
+        <th>Method</th>
+        <th>State</th>
+        <th>🚩</th>
+        <th>✓</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for fund in funds %}
+    <tr class="{% if fund.disabled %}disabled{% else %}enabled{% endif %}">
+        <td>{{ fund.id }}</td>
+        <td>{{ fund.ordinal }}</td>
+        <td class="pre"><div class="name">{{ fund.series_name }}</div
+            ><div class="matched">{{ fund.fund_text }}</div
+            ><div class="plain">{{ fund.matched_text }}</div
+            >{% if fund.aligned_name %}<div class="name aligned">{{ fund.aligned_name|safe }}</div
+            ><div class="matched aligned">{{ fund.aligned_matched|safe }}</div
+            >{% endif %}</td>
+        <td class="center">{{ fund.ticker_symbol }}</td>
+        <td class="center">{{ fund.first_line }}-{{ fund.last_line }}</td>
+        <td class="method">{{ fund.method }}</td>
+        <td class="fill w50">
+            <a href="javascript:void(0);"
+               onclick="toggleFundState({{ fund.id }}, '{{ fund.state }}')">{{ fund.state.title() }}</a>
+        </td>
+        <td class="fill w50">
+            <a href="javascript:void(0);"
+               onclick="toggleFundFlagged({{ fund.id }}, {{ fund.flagged }})">{% if fund.flagged %}🚩{% endif %}</a>
+        </td>
+        <td class="fill w50"><input type="checkbox" name="select_fund" value="{{ fund.id }}" id="select-{{ fund.id }}"><label
+                for="select-{{ fund.id }}">✓</label></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- Navigation Links at the Bottom -->
+<div class="nav bottom">
+    {% if previous_filing %}
+    <a href="{{ url_for('filing_funds', cik=previous_filing['cik']) }}">&lt;&lt; {{ previous_filing.display_name }}</a>
+    {% endif %}
+    {% if next_filing %}
+    <a href="{{ url_for('filing_funds', cik=next_filing['cik']) }}">{{ next_filing.display_name }} &gt;&gt;</a>
+    {% endif %}
+</div>
