@@ -3,3 +3,4 @@
 /blocks
 /plain
 /*.sqlite
+/*.sqlite-journal

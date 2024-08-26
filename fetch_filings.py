@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS filings (
     file_date TEXT,
     cik TEXT,
     display_name TEXT,
-    prop1 TEXT
+    num_lines INTEGER
 );
 """)
 conn.commit()

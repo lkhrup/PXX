@@ -20,6 +20,8 @@ class ExtractorBase:
             self.add_space = True
             return
         text = re.sub(r'&nbsp;', ' ', text, flags=re.IGNORECASE)
+        text = re.sub(r'&reg;', '(R)', text, flags=re.IGNORECASE)
+        text = re.sub(r'&amp;', '&', text, flags=re.IGNORECASE)
         text = re.sub('[ \u00a0]+', ' ', text)
         if self.add_newline and text:
             text = '\n' + text

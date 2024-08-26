@@ -1,11 +1,11 @@
+import argparse
 import json
 import os
 import re
 import sys
 import unittest
-import argparse
 
-from html_to_plain import html_to_plain
+from utils import ensure_text_filing
 
 os.makedirs('plain', exist_ok=True)
 os.makedirs('blocks', exist_ok=True)
@@ -19,23 +19,6 @@ def custom_serializer(obj):
 
 def json_dumps(obj, **kwargs):
     return json.dumps(obj, **kwargs, default=custom_serializer)
-
-
-class Fund:
-
-    def __init__(self, original_name, ticker_symbols):
-        self.original_name = original_name
-        self.name = normalize_fund(original_name)
-        self.ticker_symbols = sorted(ticker_symbols)
-
-    def to_dict(self):
-        return {
-            'name': self.name,
-            'ticker_symbols': self.ticker_symbols,
-        }
-
-    def __str__(self):
-        return self.original_name
 
 
 class Block:
@@ -55,86 +38,6 @@ class Block:
 
 def char_positions(line, char):
     return [i for i, c in enumerate(line) if c == char]
-
-
-def normalize_fund(fund: str) -> str:
-    fund = fund.upper()
-    fund = fund.replace(',', '')
-    fund = fund.replace('.', '')
-    fund = fund.replace('*', '')
-    fund = fund.replace('_', '')
-    fund = fund.replace('=', '')
-    fund = re.sub(' +', ' ', fund)
-    fund = fund.replace(' & ', ' AND ')  # filings/0001331971-0001438934-18-000424.txt
-    fund = fund.replace('(R)', '')  # filings/0001131042-0000894189-18-005019.txt
-    # fund = fund.replace(' :', ':')
-    fund = fund.strip()
-    # Remove some common trailing patterns
-    item_index = fund.find('ITEM ')
-    if item_index > 0:
-        fund = fund[:item_index]
-    paren_index = fund.find('(')
-    if paren_index > 0:
-        fund = fund[:paren_index]
-    subadviser_index = fund.find('- SUB-ADVISER:')
-    if subadviser_index > 0:
-        fund = fund[:subadviser_index]
-    return fund.strip()
-
-
-def match_fund(series: list[Fund], title: str) -> tuple[str, Fund] | None:
-    """
-    :param series: list of funds
-    :param title: text to match
-    :return: (method, fund) or None
-    """
-    if not title or title == "FUND" or title == "TRUST FUND" or title == "PROPOSED FUND":
-        return None
-    if 'INSTITUTIONAL CLIENT' in title or 'WHETHER FUND' in title:
-        return None
-    for fund in series:
-        if title == fund.name:
-            return '1', fund
-        if fund.name.startswith(title) and title + ' FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
-            return '2', fund
-        if title in fund.ticker_symbols:  # filings/0001551030-0001438934-18-000195.txt
-            return '3', fund
-    if '-' in title:
-        parts = title.split('-')
-        for part in parts:
-            part_stripped = part.strip()
-            for fund in series:
-                if part_stripped == fund.name:
-                    return '4-', fund
-    if ':' in title:
-        parts = title.split(':')
-        for part in parts:
-            part_stripped = part.strip()
-            for fund in series:
-                if part_stripped == fund.name:
-                    return '4:', fund
-    # Try dropping the first word of the title -- 0000711175-0000067590-18-001410.txt
-    space_index = title.find(' ')
-    if space_index > 0:
-        title1 = title[space_index + 1:]
-        for fund in series:
-            if title1 == fund.name:
-                return '5', fund
-    # Try matching the start or end of the title
-    for fund in series:
-        if fund.name.endswith(' ' + title):
-            return '6', fund  # This method may cause bad matches
-        if title.startswith(fund.name + ' '):
-            return '7', fund  # This method may cause bad matches
-    if len(title) == 30:  # Try matching 30 characters -- filings/0001567101-0000894189-18-004570.txt
-        for fund in series:
-            if fund.name[:30] == title:
-                return '8', fund
-    # if title.endswith(' FUND') or title.endswith(' ETF') or title.endswith(' PORTFOLIO'):
-    # Catches some funds for which there is no <SERIES-NAME> line,
-    # but likely to cause erroneous matches.
-    # return '9', Fund(title, [])
-    return None
 
 
 def normalize_security(security):
@@ -373,103 +276,27 @@ def split_blocks(lines: list[str]) -> tuple[str, list[Block]]:
     return 'indentation', split_blocks_indentation(lines)
 
 
-def find_fund_name_in_line(lines: list[str], index: int, series: list[Fund]) -> tuple[str, str, Fund] | None:
-    """ Returns (text matched, method, fund), or None if no match.
-    """
-    line = lines[index]
-    line_stripped = lines[index].strip()
-    if not line_stripped:
-        return None
-    # print(f"Fund? {line}")
+class FundLine:
+    #     id SERIAL PRIMARY KEY,
+    #     cik TEXT,
+    #     ordinal TEXT,
+    #     series_name TEXT,
+    #     ticker_symbol TEXT,
+    #     method TEXT,
+    #     fund_name TEXT,
+    #     fund_text TEXT
 
-    if line_stripped.startswith("="):
-        # Title, potentially multi-lines
-        line = line_stripped.replace('=', '').strip()
-        title_start = index
-        while title_start > 0:
-            title_line = lines[title_start - 1].strip()
-            if not title_line.startswith('='):
-                break
-            line = title_line.replace('=', '').strip() + " " + line
-            title_start -= 1
-        line_norm = normalize_fund(line)
-        match = match_fund(series, line_norm)
-        if match is not None:
-            return '\n'.join(lines[title_start:index + 1]), match[0], match[1]
-        return None
-
-    candidates = []
-    if line.startswith('  | '):
-        print("  table line")
-        line = line[4:]
-        # There is a high risk we'd erroneously match fund mentioned in a proposal.
-        # So we're very stric as to what we accept.
-        # Patterns:
-        #   "Registrant: FUND_NAME"
-        #   "Fund Name: FUND_NAME"
-        #   "Fund: FUND_NAME"
-        #   "FUND_NAME" followed by empty columns
-        line_upper = line.upper()
-        if line_upper.startswith('REGISTRANT:'):
-            print("  dropping registrant")
-            line = line[11:]
-        elif line.startswith('FUND NAME:'):
-            print("  dropping fund name")
-            line = line[10:]
-        elif line.startswith('FUND:'):
-            print("  dropping fund")
-            line = line[5:]
-        cells = line_upper.split('|')
-        rest = "".join(cells[1:]).strip().upper()
-        if rest:
-            has_junk = True
-            print("  junk after first cell: " + rest)
-            # Junk after the first cell, probably a vote line.
-            if 'ITEM' in rest and ('EXHIBIT' in rest or 'EX ' in rest):
-                # Exception for 0001314414-0001580642-18-003578.txt,
-                # where a cell contains "Item 1, Exhibit 17".
-                print("  exception for item/exhibit")
-                has_junk = False
-            elif rest.startswith('FUND NAME'):
-                # 0001355064-0001580642-18-004117.txt
-                print("  exception for fund name")
-                line = rest[9:].strip()
-                if line.startswith('-'):
-                    line = line[1:].strip()
-                has_junk = False
-            pvr_index = rest.find('PROXY VOTING RECORD')
-            if pvr_index >= 0:
-                print("  exception for proxy voting record")
-                line = rest[:pvr_index].strip()
-                has_junk = False
-            if has_junk:
-                print("  skipping due to junk")
-                return None
-        line = line.split('|')[0].strip()
-        if '-' in line:
-            print("  hypen detected, adding candidates")
-            # 0001314414-0001580642-18-003578.txt
-            # Consider subparts in "Registrant: NORTHERN LIGHTS FUND TRUST - Alphacore Absolute Fund"
-            for part in line.split('-'):
-                candidates.append(part)  # XXX this is done in match_fund, do it only in one place
-        candidates.append(line)
-    else:
-        candidates.append(line)
-
-    # Sort candidates, longest first
-    candidates.sort(key=lambda x: len(x), reverse=True)
-
-    for candidate in candidates:
-        match = match_fund(series, normalize_fund(candidate))
-        if match is not None:
-            print(f"  candidate: {candidate}")
-            print(f"  matched({match[0]}): {match[1]}")
-            return lines[index], match[0], match[1]
-
-    return None
+    def __init__(self, cik, ordinal, series_name, ticker_symbol, method, fund_name, fund_text):
+        self.cik = cik
+        self.ordinal = ordinal
+        self.series_name = series_name
+        self.ticker_symbol = ticker_symbol
+        self.method = method
+        self.fund_name = fund_name
+        self.fund_text = fund_text
 
 
-def find_fund_line(index: int, fund_lines: list[tuple[int, tuple[str, str, Fund]]]) -> int:
+def find_fund_line(index: int, fund_lines: list[FundLine]) -> int:
     # Dichotomy search to find the fund line at or immediately before index
     if not fund_lines:
         return -1
@@ -491,13 +318,17 @@ def find_fund_line(index: int, fund_lines: list[tuple[int, tuple[str, str, Fund]
     return result
 
 
+def test_fund_line(name):
+    return FundLine('CIK', '1', name, 'TICKER', 'METHOD', 'FUND NAME', 'FUND TEXT')
+
+
 class TestFindFundLine(unittest.TestCase):
 
     def test_find_fund_line(self):
         fund_lines = [
-            (0, ('FUND A', '', Fund('FUND A', []))),
-            (5, ('FUND B', '', Fund('FUND B', []))),
-            (10, ('FUND C', '', Fund('FUND C', []))),
+            (0, test_fund_line('FUND A'),
+            (5, test_fund_line('FUND B')),
+            (10, test_fund_line('FUND C')),
         ]
         assert find_fund_line(0, []) == -1
         assert find_fund_line(0, fund_lines) == 0
@@ -510,12 +341,42 @@ class TestFindFundLine(unittest.TestCase):
         assert find_fund_line(11, fund_lines) == 2
         assert find_fund_line(15, fund_lines) == 2
         fund_lines = [
-            (1650, ('', '', Fund('ARK Industrial Innovation ETF', []))),
-            (3475, ('ARK Innovation ETF', '1', Fund('ARK Innovation ETF', []))),
-            (7338, ('ARK Web x.0 ETF', '1', Fund('ARK Web x.0 ETF', []))),
-            (8723, ('The 3D Printing ETF', '1', Fund('The 3D Printing ETF', []))),
+            (1650, test_fund_line('ARK Industrial Innovation ETF')),
+            (3475, test_fund_line('ARK Innovation ETF')),
+            (7338, test_fund_line('ARK Web x.0 ETF')),
+            (8723, test_fund_line('The 3D Printing ETF')),
         ]
         assert find_fund_line(3252, fund_lines) == 0
+
+def split_filing(filename, output_filename):
+    print(f"\n\n\n---------- {filename} ----------\n")
+    with open(os.path.join('filings', filename), 'r', encoding="utf-8") as f:
+        filing = f.read()
+
+    # Split at the "<TEXT>" line
+    parts = filing.split('<TEXT>\n')
+    preamble = parts[0]
+    filing = parts[1].split('</TEXT>\n')[0]
+    if len(parts) > 2:
+        print("Warning: multiple <TEXT> sections")
+
+    # Extract series from preamble
+    series = extract_series(preamble)
+    print("Series:")
+    for s in series:
+        print(f"  {s}")
+
+    # Detect html filing and convert to text
+    filing = ensure_text_filing(filename, filing)
+
+    # Split filing into sections, write out blocks as JSON
+    sections = split_sections(series, filing)
+    if len(sections) == 0:
+        print(f"Warning: no relevant blocks found in {filename}")
+        exit(1)
+    with open(output_filename, 'w', encoding="utf-8") as f:
+        f.write(json_dumps(sections, indent=2))
+
 
 
 def split_sections(series: list[Fund], filing: str):
@@ -581,6 +442,7 @@ def split_sections(series: list[Fund], filing: str):
             else:
                 print("WARNING: fund line not identified")
                 sections.append({
+                    'fund_method': '0',
                     'blocks': section_blocks,
                     'split_method': split_method,
                 })
@@ -628,64 +490,6 @@ def extract_series(preamble: str) -> list[Fund]:
     return series
 
 
-def ensure_text_filing(filename: str, filing: str) -> str:
-    filing = filing.strip()
-    first_line_end = filing.find('\n')
-    first_line = filing[:first_line_end].lower()
-    if first_line.startswith('<html>') or first_line.startswith('<!doctype html'):
-        plain_file = os.path.join('plain', filename)
-        if os.path.exists(plain_file):
-            print("Using cached HTML conversion")
-        else:
-            print("Converting HTML filing")
-            # Using html2text (unsatisfactory, table layout is sometimes broken):
-            #   h = html2text.HTML2Text()
-            #   h.body_width = 0  # Disable line wrapping -- 0001314414-0001580642-18-003578.txt
-            #   h.pad_tables = True  # Enable table padding -- 0001314414-0001580642-18-003578.txt
-            #   filing = h.handle(filing)
-            #
-            # Using pandoc (unsatisfactory, no support for multiple table header rows):
-            #   with tempfile.NamedTemporaryFile(suffix=".html", mode='w', encoding='utf-8') as temp_html_file:
-            #       temp_html_file.write(filing)
-            #       temp_html_path = temp_html_file.name
-            #       subprocess.run(["pandoc", temp_html_path, "-f", "html", "-t", "plain", "-o", plain_file])
-            with open(plain_file, 'w', encoding="utf-8") as f:
-                html_to_plain(filing, f)
-        with open(plain_file, 'r', encoding="utf-8") as f:
-            filing = f.read()
-    return filing
-
-
-def split_filing(filename, output_filename):
-    print(f"\n\n\n---------- {filename} ----------\n")
-    with open(os.path.join('filings', filename), 'r', encoding="utf-8") as f:
-        filing = f.read()
-
-    # Split at the "<TEXT>" line
-    parts = filing.split('<TEXT>\n')
-    preamble = parts[0]
-    filing = parts[1].split('</TEXT>\n')[0]
-    if len(parts) > 2:
-        print("Warning: multiple <TEXT> sections")
-
-    # Extract series from preamble
-    series = extract_series(preamble)
-    print("Series:")
-    for s in series:
-        print(f"  {s}")
-
-    # Detect html filing and convert to text
-    filing = ensure_text_filing(filename, filing)
-
-    # Split filing into sections, write out blocks as JSON
-    sections = split_sections(series, filing)
-    if len(sections) == 0:
-        print(f"Warning: no relevant blocks found in {filename}")
-        exit(1)
-    with open(output_filename, 'w', encoding="utf-8") as f:
-        f.write(json_dumps(sections, indent=2))
-
-
 def split_filings():
     for filename in os.listdir('filings'):
         if filename == "0001066241-0001162044-18-000507.txt":
@@ -723,8 +527,10 @@ if __name__ == '__main__':
                 os.remove(os.path.join('blocks', filename))
 
     if args.filings:
-        for filing in args.filings:
-            split_filing(filing, "/dev/stdout")
+        for filename in args.filings:
+            output_filename = os.path.join('blocks', filename)
+            output_filename = output_filename.replace('.txt', '.json')
+            split_filing(filename, output_filename)
     else:
         split_filings()
     exit(0)

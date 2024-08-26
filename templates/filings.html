@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select a Filing</title>
+</head>
+<body>
+<h1>Select a Filing</h1>
+
+<table>
+    <tbody>
+    <tr>
+        <td>CIK</td>
+        <td>Name</td>
+    </tr>
+    {% for filing in filings %}
+    <tr>
+        <td><a href="{{ url_for('filing_funds', cik=filing.cik) }}">{{ filing.cik }}</a></td>
+        <td><a href="{{ url_for('filing_funds', cik=filing.cik) }}">{{ filing.display_name }}</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</body>
+</html>
