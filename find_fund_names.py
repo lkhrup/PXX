@@ -323,9 +323,11 @@ class FundMatcher:
                 print(f"T   matched 'item' in {text}")
             text = text[:m.start()].strip()
             extra_tweaks.append("trailing(item)")
-        paren_index = text.find('(')
-        if paren_index > 0:
-            text = text[:paren_index].strip()
+        # Look for a parenthesis, and remove the content.
+        # Ignore (R), (SM), (TM) as they are likely to be part of a security name.
+        paren_match = re.search(r'\([^)]{3}', text)
+        if paren_match is not None:
+            text = text[:paren_match.start()].strip()
         fm, score = self.match_fund(text)
         if fm is None:
             if likely and self.verbose:
