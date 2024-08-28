@@ -11,17 +11,23 @@ from utils import ensure_text_filing, longest_common_substring, levenshtein_dist
 
 year = 2018
 
-SECURITY_REGEXP = r'\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LIMITED|LTD|LLC|PLC)\.?$'
+def likely_security(text):
+    return re.search(r'\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LIMITED|LTD|LLC|PLC)\.?$', text) is not None
 
+def likely_fund(text):
+    return re.search(r'equity|fund|portfolio', text, re.IGNORECASE) is not None
 
 class Fund:
 
-    def __init__(self, original_name, ticker_symbols):
+    def __init__(self, original_name, ticker_symbols=None):
         self.original_name = original_name
         self.name = normalize_fund(original_name.upper())
         self.alphanum = re.sub('[^A-Z0-9]', '', self.name)
         self.alphanum_set = set(self.alphanum)
-        self.ticker_symbols = sorted(ticker_symbols)
+        if ticker_symbols is None:
+            self.ticker_symbols = []
+        else:
+            self.ticker_symbols = sorted(ticker_symbols)
 
     def to_dict(self):
         return {
@@ -57,14 +63,17 @@ def normalize_fund(fund: str) -> str:
     # Fund should match "^[^A-Za-z0-9 '&%/.,:+*\$|()-]+$"
     # "'", "*" can just be removed
     fund = re.sub(r"['*]", '', fund)
+    # Get rid of (R) entirely.
+    fund = re.sub(r'&reg;|\(R\)|\[R]|<SUP>R</SUP>', '', fund, flags=re.IGNORECASE)
+    # Remove parentheses and superscript around TM, SM.
+    fund = re.sub(r'\(TM\)|<SUP>TM</SUP>', 'TM', fund, flags=re.IGNORECASE)
+    fund = re.sub(r'\(SM\)|<SUP>SM</SUP>', 'SM', fund, flags=re.IGNORECASE)
     # '/', '|', ',', ':', '$', are replaced by ' '
+    # Some patterns above match on '/', so be sure to keep this one last.
     fund = re.sub(r'[/|,:$]', ' ', fund)
     # Normalize 'and' to ' & '
     fund = re.sub(r'&amp;', '&', fund, flags=re.IGNORECASE)
     fund = re.sub(r'\bAND\b', ' & ', fund, flags=re.IGNORECASE)
-    # Get rid of (R) and (TM) and (SM)
-    fund = re.sub(r'&reg;|\(R\)|\[R]|<SUP>R</SUP>|\(TM\)|<SUP>TM</SUP>|\(SM\)|<SUP>SM</SUP>', '', fund,
-                  flags=re.IGNORECASE)
     # '%', '.', '+', '-' can be left alone
     # Normalize U.S. to US
     fund = re.sub(r'\bU\.S\.\b', 'US', fund)
@@ -85,6 +94,10 @@ class FundMatcher:
     def __init__(self, series: list[Fund], lines: list[str]):
 
         self.series = series
+        # Compute the set of distinct words in the series names;
+        # irrelevant lines won't contain any of these words.
+        # We remove common words likely to be part of the fund name because
+        # they do not, by themselves, make a line relevant.
         series_words = set()
         for fund in series:
             for word in fund.name.split():
@@ -131,7 +144,13 @@ class FundMatcher:
         """
         while i < last_line:
 
+            # If the line contains "equity", "fund", "portfolio", it is likely to be relevant.
+            # Performing this check early help avoid skipping over relevant lines.
+            if likely_fund(self.lines[i]):
+                return i
+
             # Lines that begin with a number are probably votes and should be skipped.
+            # "361 Domestic Long/Short Equity Fund" is a counter-example (caught by test above).
             # Subsequent indented lines can also safely be skipped.
             m = re.match(r'\s*\|?\s*([A-Z](.\d)?|\d+|\d+[A-Za-z].?|CMMT)\b', self.lines[i])
             if m is not None:
@@ -168,7 +187,7 @@ class FundMatcher:
             if not text or text in ["FUND", "TRUST FUND", "PROPOSED FUND"]:
                 i += 1
                 continue
-            if re.search(SECURITY_REGEXP, text):
+            if likely_security(text):
                 i += 1
                 continue
             if re.search(r'(INSTITUTIONAL CLIENT|WHETHER FUND|C/O)', text):
@@ -212,12 +231,12 @@ class FundMatcher:
         if self.verbose:
             print(f"Candidates: {candidates}")
 
-        best_score = 0
+        best_score = -1
         best_candidate = None
         for text in candidates:
 
             # Skip over very long lines
-            if len(text) > self.max_series_length + 20:
+            if len(text) > self.max_series_length + 40:
                 continue
 
             fm, score = self.process_candidate(index, text, tweaks)
@@ -277,7 +296,7 @@ class FundMatcher:
 
     def process_candidate(self, index: int, text: str, tweaks: list[str]) -> tuple[FundMatch | None, int]:
         text_upper = text.upper()
-        if re.search(SECURITY_REGEXP, text_upper):
+        if likely_security(text_upper) and not likely_fund(text_upper):
             # Prevent candidates that look like security names from being matched.
             return None, 0
         extra_tweaks = []
@@ -376,6 +395,7 @@ class FundMatcher:
         return None
 
     def match_common_substring(self, title: str) -> tuple[FundMatch | None, int]:
+        # TODO: ignore matches limited to FUND, PORTFOLIO, TRUST; also INTERNATIONAL
         alphanum = re.sub('[^A-Z0-9]', '', title)
         if self.verbose:
             print(f"T Trying common substring match for {title} as {alphanum}")
@@ -387,15 +407,15 @@ class FundMatcher:
         for fund in self.series:
             if len(alphanum_set.intersection(fund.alphanum_set)) < 3:
                 continue
-            if self.verbose:
-                print(f"T   against {fund.alphanum} ({fund.name})")
 
             length, pos1, pos2 = longest_common_substring(alphanum, fund.alphanum)
 
             # heads and tails penalize the score
             penalty = pos1 + pos2 + len(alphanum) - (pos1 + length) + len(fund.alphanum) - (pos2 + length)
-            score = length - penalty / 4
+            score = max(1, length - penalty / 4)
             if penalty > penalty_threshold or score < low_threshold:
+                if self.verbose:
+                    print(f"T not {fund.alphanum} -- {penalty} > {penalty_threshold} or {score} < {low_threshold}")
                 continue
 
             if self.verbose:
@@ -416,13 +436,13 @@ class FundMatcher:
             print(f"T   {pos1, len(alphanum), pos3} {pos2, len(best_match.alphanum), pos4}")
         ld = levenshtein_distance(best_match.name, title)
         tweaks = [f"common{(length, pos1, pos2, pos3, pos4)}", f"levenshtein({ld})"]
-        return FundMatch(best_match, tweaks), length - ld
+        return FundMatch(best_match, tweaks), max(1, length - ld)
 
 
 class TestFundMatcher(unittest.TestCase):
 
     def test_0000804239_easy(self):
-        fund = Fund("SIMT CORE FIXED INCOME FUND", [])
+        fund = Fund("SIMT CORE FIXED INCOME FUND")
         lines = ["Fund Name : CORE FIXED INCOME FUND"]
         matcher = FundMatcher([fund], lines)
         matcher.verbose = True
@@ -430,7 +450,7 @@ class TestFundMatcher(unittest.TestCase):
         self.assertIsNotNone(match)
 
     def test_0000804239_hard(self):
-        fund = Fund("SIMT High Yield Bond Fund - Class G", [])
+        fund = Fund("SIMT High Yield Bond Fund - Class G")
         lines = ["Fund Name : HIGH YIELD BOND FUND"]
         matcher = FundMatcher([fund], lines)
         matcher.verbose = True
@@ -438,7 +458,7 @@ class TestFundMatcher(unittest.TestCase):
         self.assertIsNotNone(match)
 
     def test_0000804239_enhanced(self):
-        fund = Fund("SIMT ENHANCED INCOME FUND", [])
+        fund = Fund("SIMT ENHANCED INCOME FUND")
         lines = ["Fund Name : Enhanced Income"]
         matcher = FundMatcher([fund], lines)
         matcher.verbose = True
@@ -446,7 +466,7 @@ class TestFundMatcher(unittest.TestCase):
         self.assertIsNotNone(match)
 
     def test_0000741350(self):
-        fund = Fund("PGIM Emerging Markets Debt Hard Currency Fund", [])
+        fund = Fund("PGIM Emerging Markets Debt Hard Currency Fund")
         lines = ["PGIM Emerging Markets Debt Hard Currency Fund - Sub-Advisor: PGIM Fixed Income"]
         matcher = FundMatcher([fund], lines)
         matcher.verbose = True
@@ -454,47 +474,72 @@ class TestFundMatcher(unittest.TestCase):
         self.assertIsNotNone(match)
 
     def test_0000711175(self):
-        series_name = "CONSERVATIVE BALANCED PORTFOLIO"
+        fund = Fund("CONSERVATIVE BALANCED PORTFOLIO")
         lines = ["PSF Conservative Balanced Portfolio - Equity Sleeve - Sub-Adviser: QMA"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0000875186(self):
-        series_name = "Small-Mid Cap Equity Fund"
+        fund = Fund("Small-Mid Cap Equity Fund")
         lines = ["=========== Consulting Group Capital Markets Funds - Small-Mid Cap  ============"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0000819118(self):
-        series_name = "Fidelity International Index Fund"
+        fund = Fund("Fidelity International Index Fund")
         lines = ["EDISON INTERNATIONAL"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
-        print(match)
         self.assertIsNone(match)
 
     def test_0001174610(self):
-        series_name = "ProShares Short 7-10 Year Treasury"
+        fund = Fund("ProShares Short 7-10 Year Treasury")
         lines = ["  | <U+0095> | Short 7-10 Year Treasury |"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0001046292(self):
-        series_name = "Goldman Sachs Mid Cap Value Fund"
+        fund = Fund("Goldman Sachs Mid Cap Value Fund")
         lines = ["========= Goldman Sachs Variable Insurance Trust - Goldman Sachs Mid  ==========",
                  "=========                       Cap Value Fund                        =========="]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
-        print(match)
+
+    def test_0001318342(self):
+        fund = Fund("361 Domestic Long/Short Equity Fund")
+        lines = ["361 Domestic Long/Short Equity Fund"]
+        matcher = FundMatcher([fund], lines)
+        matcher.verbose = True
+        self.assertEqual(0, matcher.skip_irrelevant_lines(0, 1))
+        match = matcher.find_at(0)
+        self.assertIsNotNone(match)
+
+    def test_0001015965(self):
+        fund = Fund("Voya RussellTM Large Cap Growth Index Portfolio")
+        lines = ["Voya Russell<sup>TM</sup> Large Cap Growth Index Portfolio"]
+        self.assertEqual(fund.original_name, normalize_fund(lines[0]))
+        matcher = FundMatcher([fund], lines)
+        matcher.verbose = True
+        match = matcher.find_at(0)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.method, ["exact"])
+
+    def test_0001261788(self):
+        fund = Fund("Zevenbergen Growth Fund")
+        lines = ["  | Zevenbergen Growth Fund Investment Company Report |"]
+        matcher = FundMatcher([fund], lines)
+        matcher.verbose = True
+        match = matcher.find_at(0)
+        self.assertIsNotNone(match)
 
 
 def extract_series(preamble: str) -> list[Fund]:
@@ -583,12 +628,10 @@ def process_filing(conn, cik, filename, verbose=False):
 
     # Split line ranges between CPUs
     num_cpus = os.cpu_count()
-    print(f"Num CPUs: {num_cpus}")
     actual_num_lines = num_lines - first_line
     chunk_size = actual_num_lines // num_cpus
     line_ranges = [(first_line + i * chunk_size, first_line + (i + 1) * chunk_size) for i in range(num_cpus)]
     line_ranges[-1] = (line_ranges[-1][0], num_lines)
-    print(f"Lines ranges: {line_ranges} / {len(lines)}")
 
     start_time = time.time()
     matches = []
@@ -640,7 +683,6 @@ def process_filing(conn, cik, filename, verbose=False):
     i = 0
     while i < len(matches) - 1:
         if matches[i].fund == matches[i + 1].fund:
-            print(f"W {filename}: consecutive matches for {matches[i].fund.name}")
             m = matches[i]
             m.last_line = matches[i + 1].last_line
             matches[i + 1] = m
@@ -674,7 +716,6 @@ def process_filing(conn, cik, filename, verbose=False):
             m = re.match('levenshtein\((\d+)\)', tweak[0])
             if m and is_majority:
                 levenshtein_threshold = max(levenshtein_threshold, int(m.group(1)) + 5)
-                print(f"Raise levenshtein threshold to {levenshtein_threshold}")
 
     # Remove previous matches and insert new ones
     conn.execute("BEGIN")
