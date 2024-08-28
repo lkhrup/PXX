@@ -95,7 +95,7 @@ def process_filing(cik):
 @app.route('/filings')
 def filings_list():
     conn = get_db_connection()
-    filings = conn.execute('SELECT DISTINCT cik, display_name FROM filings').fetchall()
+    filings = conn.execute('SELECT cik, display_name FROM filings ORDER BY cik').fetchall()
     conn.close()
     return render_template('filings.html', filings=filings)
 

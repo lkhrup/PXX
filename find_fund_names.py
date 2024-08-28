@@ -3,18 +3,21 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import unittest
+from multiprocessing import Pool
 
 from utils import ensure_text_filing, longest_common_substring, levenshtein_distance
 
 year = 2018
 
+SECURITY_REGEXP = r'\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LIMITED|LTD|LLC|PLC)\.?$'
 
 class Fund:
 
     def __init__(self, original_name, ticker_symbols):
         self.original_name = original_name
-        self.name = normalize_fund(original_name)
+        self.name = normalize_fund(original_name.upper())
         self.alphanum = re.sub('[^A-Z0-9]', '', self.name)
         self.alphanum_set = set(self.alphanum)
         self.ticker_symbols = sorted(ticker_symbols)
@@ -28,18 +31,21 @@ class Fund:
     def __str__(self):
         return self.original_name
 
+    def __eq__(self, other):
+        return self.original_name == other.original_name
+
 
 class FundMatch:
 
-    def __init__(self, fund: Fund, method: list[str]):
+    def __init__(self, fund: Fund, tweaks: list[str]):
         self.fund = fund
         self.text = None
-        self.method = method
-        self.start_line = None
-        self.end_line = None
+        self.method = tweaks
+        self.first_line = None
+        self.last_line = None
 
     def __str__(self):
-        return f"L{self.start_line} {self.fund.name} ({';'.join(self.method)})"
+        return f"L{self.first_line} {self.fund.name} ({';'.join(self.method)})"
 
     def add_tweaks(self, tweaks):
         if tweaks:
@@ -48,16 +54,20 @@ class FundMatch:
 
 def normalize_fund(fund: str) -> str:
     # Fund should match "^[^A-Za-z0-9 '&%/.,:+*\$|()-]+$"
-    fund = fund.upper()
     # "'", "*" can just be removed
     fund = re.sub(r"['*]", '', fund)
     # '/', '|', ',', ':', '$', are replaced by ' '
     fund = re.sub(r'[/|,:$]', ' ', fund)
     # Normalize 'and' to ' & '
-    fund = re.sub(r'\bAND\b', ' & ', fund)
+    fund = re.sub(r'&amp;', '&', fund, flags=re.IGNORECASE)
+    fund = re.sub(r'\bAND\b', ' & ', fund, flags=re.IGNORECASE)
     # Get rid of (R) and (TM) and (SM)
-    fund = re.sub(r'\(R\)|<SUP>R</SUP>|\(TM\)|<SUP>TM</SUP>|\(SM\)|<SUP>SM</SUP>', '', fund)
+    fund = re.sub(r'&reg;|\(R\)|\[R]|<SUP>R</SUP>|\(TM\)|<SUP>TM</SUP>|\(SM\)|<SUP>SM</SUP>', '', fund, flags=re.IGNORECASE)
     # '%', '.', '+', '-' can be left alone
+    # Normalize U.S. to US
+    fund = re.sub(r'\bU\.S\.\b', 'US', fund)
+    # Remove numeric entities
+    fund = re.sub('&#[0-9]+;', ' ', fund)
     # Normalize whitespace
     fund = re.sub(' +', ' ', fund)
     fund = fund.strip()
@@ -65,161 +75,157 @@ def normalize_fund(fund: str) -> str:
 
 
 class FundMatcher:
+    """
+    Match fund names in a list of lines.
+    Stateless: can be used concurrently on multiple ranges of lines.
+    """
 
     def __init__(self, series: list[Fund], lines: list[str]):
+
         self.series = series
-        self.lines = lines
-        self.blacklist = ["FUND", "TRUST FUND", "PROPOSED FUND", 'END NPX REPORT']
-        self.verbose = False
+        series_words = set()
+        for fund in series:
+            for word in fund.name.split():
+                series_words.add(word)
+        for word in ['FUND', 'PORTFOLIO', 'TRUST']:
+            if word in series_words:
+                series_words.remove(word)
+        self.series_words = series_words
         self.max_series_length = max(len(fund.name) for fund in series)
-        self.cache = {}
 
-    def match_strict(self, title: str) -> FundMatch | None:
-        for fund in self.series:
+        self.lines = lines
 
-            if fund.name == title:
-                return FundMatch(fund, ["exact"])
-            if fund.name[:len(title)] == title and len(title) >= 30:
-                return FundMatch(fund, [f"prefix({len(title)})"])
-            if title in fund.ticker_symbols:  # filings/0001551030-0001438934-18-000195.txt
-                return FundMatch(fund, ["ticker symbol"])
-            if fund.name.startswith(title) and title + ' FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
-                return FundMatch(fund, ["suffix(FUND)"])
-            if fund.name.startswith(
-                    title) and title + ' EQUITY FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
-                return FundMatch(fund, ["suffix(EQUITY FUND)"])
+        self.verbose = False
 
-        return None
-
-    def match_common_substring(self, title: str) -> FundMatch | None:
-        alphanum = re.sub('[^A-Z0-9]', '', title)
+    def process_lines(self, first_line, last_line) -> list[FundMatch]:
+        """ Match fund names in the range [first_line, last_line].
+        """
         if self.verbose:
-            print(f"T Trying common substring match for {title} as {alphanum}")
-        low_threshold = min(5., len(alphanum) * 0.8)  # empirical
-        penalty_threshold = max(12, len(alphanum))  # empirical
-        alphanum_set = set(alphanum)
-        best_score = (0, 0, 0, 0)
-        best_match = None
-        for fund in self.series:
-            if len(alphanum_set.intersection(fund.alphanum_set)) < 3:
+            print(f"I Range: {first_line}-{last_line}")
+        matches = []
+
+        # Keep track of the last match, ignore subsequent matches for the same fund.
+        last_fund = None
+        i = first_line
+        while i < last_line:
+            i = self.skip_irrelevant_lines(i, last_line)
+            if i >= last_line:
+                break
+            match = self.find_at(i)
+            if match is not None and match.fund is not last_fund:
+                matches.append(match)
+                last_fund = match.fund
+            i += 1
+
+        return matches
+
+    def skip_irrelevant_lines(self, i, last_line) -> int:
+        """
+        Attempt to skip efficiently over most irrelevant items.
+
+        :param i: current line index
+        :param last_line: maximum line index
+        :return: the line index of the next relevant line
+        """
+        while i < last_line:
+
+            # Lines that begin with a number are probably votes and should be skipped.
+            # Subsequent indented lines can also safely be skipped.
+            m = re.match(r'\s*\|?\s*([A-Z](.\d)?|\d+|\d+[A-Za-z].?|CMMT)\b', self.lines[i])
+            if m is not None:
+                i += 1
+                ws = ' ' * len(m.group())
+                while i < last_line and self.lines[i].startswith(ws):
+                    i += 1
                 continue
-            if self.verbose:
-                print(f"T   against {fund.alphanum} ({fund.name})")
 
-            length, pos1, pos2 = longest_common_substring(alphanum, fund.alphanum)
-
-            # heads and tails penalize the score
-            penalty = pos1 + pos2 + len(alphanum) - (pos1 + length) + len(fund.alphanum) - (pos2 + length)
-            score = length - penalty / 4
-            if penalty > penalty_threshold or score < low_threshold:
+            # Skip lines that are empty or just a series of dashes, equal signs, or underscores
+            if re.match(r'[-=_]*\s*$', self.lines[i]):
+                i += 1
                 continue
 
-            if self.verbose:
-                print(f"T   lcs: {length} ({pos1},{pos2}), score={score}")
+            # Skip common pattern that never occur on the same line as a fund name,
+            # but would be likely to cause a false positive.
+            m = re.search(
+                r'Ticker|Voted|Meeting|Annual|Issue No|Mgmt|Proposal|ISIN|Type|Record Date|no proxy voting|during the reporting|SECURITY ID:|Security:|Please|Agenda Number:',
+                self.lines[i])
+            if m is not None:
+                i += 1
+                continue
 
-            if score > best_score[0]:
-                best_score = (score, length, pos1, pos2)
-                best_match = fund
-        if best_match is None:
-            return None
-        score, length, pos1, pos2 = best_score
-        if score < 5:
-            return None
-        # Compute end positions
-        pos3 = len(alphanum) - (pos1 + length)
-        pos4 = len(best_match.alphanum) - (pos2 + length)
-        if self.verbose:
-            print(f"T   {pos1, len(alphanum), pos3} {pos2, len(best_match.alphanum), pos4}")
-        ld = levenshtein_distance(best_match.name, title)
-        return FundMatch(best_match, [f"common{(length, pos1, pos2, pos3, pos4)}", f"levenshtein({ld})"])
+            # If no word in the line is part of a fund name, skip it
+            words = set(re.findall(r'\b\w+\b', self.lines[i].upper()))
+            if not words.intersection(self.series_words):
+                i += 1
+                continue
 
-    def match(self, text: str, important: bool) -> FundMatch | None:
-        original_text = text
-        text = normalize_fund(text)
-        if self.verbose:
-            print("T Matching:", text)
+            # Convert to uppercase for looser matching
+            text = self.lines[i].upper().strip()
 
-        # Exclude some common lines that can not be fund names
-        if not text:
-            return None
-        if text in self.blacklist:
-            return None
-        if (text.endswith('INC.') or text.endswith('INCORPORATED') or text.endswith('CORP.')
-                or text.endswith('CO.') or text.endswith('COMPANY')) or text.endswith('LTD') \
-                or text.endswith('LIMITED') or text.endswith('LLC') or text.endswith('CORP') \
-                or text.endswith('PLC') or text.endswith('CORPORATION') or text.endswith('LTD.'):
-            return None
-        if 'INSTITUTIONAL CLIENT' in text or 'WHETHER FUND' in text or 'C/O ' in text:
-            return None
+            # Exclude some common lines that can not be fund names
+            if not text or text in ["FUND", "TRUST FUND", "PROPOSED FUND"]:
+                i += 1
+                continue
+            if re.search(SECURITY_REGEXP, text):
+                i += 1
+                continue
+            if re.search(r'(INSTITUTIONAL CLIENT|WHETHER FUND|C/O)', text):
+                i += 1
+                continue
 
-        # Fast exact match
-        fm = self.match_strict(text)
-        if fm is not None:
-            fm.text = original_text
-            return fm
+            break
 
-        # Slower outer match
-        fm = self.match_common_substring(text)
-        if fm is not None:
-            fm.text = original_text
-            return fm
-
-        if important and self.verbose:
-            print(f"W match expected but not found in: {text}")
-
-        return None
+        return i
 
     def find_at(self, index: int) -> FundMatch | None:
-        """ Returns (text matched, method, fund), or None if no match.
+        """ Find a fund name in the line at index.
+            Subsequent lines may be used if the line is part of a multi-line title.
         """
         line = self.lines[index]
-
         line_stripped = line.strip()
         if not line_stripped:
             return None
 
-        # print(f'T {index}: {self.lines[index]}')
-
         tweaks = []
         candidates = []
         if line_stripped.startswith("="):
-            self.process_title(candidates, index, line_stripped, tweaks)
+            tweaks.append("title")
+            self.process_title(candidates, index, line_stripped)
         elif line.startswith('  | '):
+            tweaks.append("row")
             self.process_row(candidates, line, tweaks)
         else:
             candidates.append(line)
 
-        # Split at '-' to add more candidates.
+        # Split at '- ', ' -', ',' to add more candidates.
         # We try the longest candidates first, so it does not matter if a fund name is split.
         for i in range(len(candidates)):
-            if '-' in candidates[i]:
-                parts = candidates[i].split('-')
-                for j, part in enumerate(parts):
-                    candidates.append(part)
+            candidate = candidates[i]
+            if '-' in candidate:
+                for part in re.split(r'-\s|\s-|,', candidate):
+                    candidates.append(part.strip())
 
         # Sort candidates, longest first
         candidates.sort(key=lambda x: len(x), reverse=True)
         if self.verbose:
             print(f"Candidates: {candidates}")
 
+        best_score = 0
+        best_candidate = None
         for text in candidates:
 
             # Skip over very long lines
             if len(text) > self.max_series_length + 20:
                 continue
 
-            text, important, tweaks2 = self.process_candidate(text, tweaks)
+            fm, score = self.process_candidate(index, text, tweaks)
+            if fm is not None and score > best_score:
+                best_score = score
+                best_candidate = fm
 
-            fm = self.match(text, important)
-            if fm is not None:
-                fm.start_line = index
-                fm.text = text
-                fm.add_tweaks(tweaks2)
-                return fm
+        return best_candidate
 
-        return None
-
-    def process_title(self, candidates, index, line_stripped, tweaks):
+    def process_title(self, candidates, index, line_stripped):
         # Title, potentially multi-lines
         line = line_stripped.replace('=', '').strip()
         title_start = index
@@ -230,10 +236,8 @@ class FundMatcher:
             line = title_line.replace('=', '').strip() + " " + line
             title_start -= 1
         candidates.append(line)
-        tweaks.append("title")
 
     def process_row(self, candidates, line, tweaks):
-        tweaks.append("row")
         if self.verbose:
             print(f"T row")
         line = line[4:]
@@ -269,88 +273,178 @@ class FundMatcher:
         line = line.split('|')[0].strip()
         candidates.append(line)
 
-    def process_candidate(self, text: str, tweaks: list[str]) -> tuple[str, bool, list[str]]:
+    def process_candidate(self, index: int, text: str, tweaks: list[str]) -> tuple[FundMatch | None, int]:
         text_upper = text.upper()
-        tweaks2 = tweaks.copy()
-        important = False
+        if re.search(SECURITY_REGEXP, text_upper):
+            # Prevent candidates that look like security names from being matched.
+            return None, 0
+        extra_tweaks = []
+        likely = False
         m = re.search("\s*-?\s*SUB-?ADVIS[OE]R", text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'sub-adviser' in {text}")
-            important = True
+            likely = True
             text = text[:m.start()].strip()
-            tweaks2.append("trailing(subadvisor)")
+            extra_tweaks.append("trailing(subadvisor)")
         # Identify some common leading patterns
         m = re.match('REGISTRANT\s*:\s*', text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'Registrant:' in {text}")
-            important = True
+            likely = True
             text = text[m.end():]
-            tweaks2.append("leading(registrant)")
+            extra_tweaks.append("leading(registrant)")
         m = re.match('FUND(\s+NAME)?\s*:\s*', text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'fund name:' in {text}")
-            important = True
+            likely = True
             text = text[m.end():]
-            tweaks2.append("leading(fund name)")
+            extra_tweaks.append("leading(fund name)")
         # Remove some common trailing patterns
         m = re.search(r'-?\s*CLASS\b', text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'class' in {text}")
             text = text[:m.start()].strip()
-            tweaks2.append("trailing '- class'")
+            extra_tweaks.append("trailing '- class'")
         m = re.search(r'\bEFFECTIVE\b', text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'effective' in {text}")
             text = text[:m.start()].strip()
-            tweaks2.append("trailing(effective)")
+            extra_tweaks.append("trailing(effective)")
         m = re.search(r'\bITEM\b', text_upper)
         if m is not None:
             if self.verbose:
                 print(f"T   matched 'item' in {text}")
             text = text[:m.start()].strip()
-            tweaks2.append("trailing(item)")
+            extra_tweaks.append("trailing(item)")
         paren_index = text.find('(')
         if paren_index > 0:
             text = text[:paren_index].strip()
-        return text, important, tweaks2
+        fm, score = self.match_fund(text)
+        if fm is None:
+            if likely and self.verbose:
+                print(f"W match expected but not found in: {text}")
+            return None, 0
+        # Fill-in the FundMatch object with the context
+        fm.first_line = index
+        fm.text = text.strip()
+        fm.add_tweaks(tweaks)
+        fm.add_tweaks(extra_tweaks)
+        return fm, score
+
+    def match_fund(self, text: str) -> tuple[FundMatch | None, int]:
+
+        text_norm = normalize_fund(text.upper())
+        if self.verbose:
+            print(f"Matching {text} as {text_norm}")
+
+        # Fast exact match
+        fm = self.match_strict(text_norm)
+        if fm is not None:
+            return fm, len(text_norm)
+
+        # Slower common substring match
+        fm, score = self.match_common_substring(text_norm)
+        if fm is not None:
+            return fm, score
+
+        return None, 0
+
+    def match_strict(self, title: str) -> FundMatch | None:
+        for fund in self.series:
+
+            if fund.name == title:
+                return FundMatch(fund, ["exact"])
+            if fund.name[:len(title)] == title and len(title) >= 30:
+                return FundMatch(fund, [f"prefix({len(title)})"])
+            if title in fund.ticker_symbols:  # filings/0001551030-0001438934-18-000195.txt
+                return FundMatch(fund, ["ticker symbol"])
+            if fund.name.startswith(title) and title + ' FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
+                return FundMatch(fund, ["suffix(FUND)"])
+            if fund.name.startswith(
+                    title) and title + ' EQUITY FUND' == fund.name:  # 0000814680-0000814680-18-000120.txt
+                return FundMatch(fund, ["suffix(EQUITY FUND)"])
+
+        return None
+
+    def match_common_substring(self, title: str) -> tuple[FundMatch | None, int]:
+        alphanum = re.sub('[^A-Z0-9]', '', title)
+        if self.verbose:
+            print(f"T Trying common substring match for {title} as {alphanum}")
+        low_threshold = min(5., len(alphanum) * 0.8)  # empirical
+        penalty_threshold = max(12, len(alphanum))  # empirical
+        alphanum_set = set(alphanum)
+        best_score = (0, 0, 0, 0)
+        best_match = None
+        for fund in self.series:
+            if len(alphanum_set.intersection(fund.alphanum_set)) < 3:
+                continue
+            if self.verbose:
+                print(f"T   against {fund.alphanum} ({fund.name})")
+
+            length, pos1, pos2 = longest_common_substring(alphanum, fund.alphanum)
+
+            # heads and tails penalize the score
+            penalty = pos1 + pos2 + len(alphanum) - (pos1 + length) + len(fund.alphanum) - (pos2 + length)
+            score = length - penalty / 4
+            if penalty > penalty_threshold or score < low_threshold:
+                continue
+
+            if self.verbose:
+                print(f"T   lcs: {length} ({pos1},{pos2}), score={score}")
+
+            if score > best_score[0]:
+                best_score = (score, length, pos1, pos2)
+                best_match = fund
+        if best_match is None:
+            return None, 0
+        score, length, pos1, pos2 = best_score
+        if score < 5:
+            return None, 0
+        # Compute end positions
+        pos3 = len(alphanum) - (pos1 + length)
+        pos4 = len(best_match.alphanum) - (pos2 + length)
+        if self.verbose:
+            print(f"T   {pos1, len(alphanum), pos3} {pos2, len(best_match.alphanum), pos4}")
+        ld = levenshtein_distance(best_match.name, title)
+        tweaks = [f"common{(length, pos1, pos2, pos3, pos4)}", f"levenshtein({ld})"]
+        return FundMatch(best_match, tweaks), length - ld
 
 
 class TestFundMatcher(unittest.TestCase):
 
     def test_0000804239_easy(self):
-        series_name = "SIMT CORE FIXED INCOME FUND"
+        fund = Fund("SIMT CORE FIXED INCOME FUND", [])
         lines = ["Fund Name : CORE FIXED INCOME FUND"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0000804239_hard(self):
-        series_name = "SIMT High Yield Bond Fund - Class G"
-        self.assertEqual("SIMT HIGH YIELD BOND FUND", normalize_fund(series_name))
+        fund = Fund("SIMT High Yield Bond Fund - Class G", [])
         lines = ["Fund Name : HIGH YIELD BOND FUND"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0000804239_enhanced(self):
-        series_name = "SIMT ENHANCED INCOME FUND"
+        fund = Fund("SIMT ENHANCED INCOME FUND", [])
         lines = ["Fund Name : Enhanced Income"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
 
     def test_0000741350(self):
-        series_name = "PGIM Emerging Markets Debt Hard Currency Fund"
+        fund = Fund("PGIM Emerging Markets Debt Hard Currency Fund", [])
         lines = ["PGIM Emerging Markets Debt Hard Currency Fund - Sub-Advisor: PGIM Fixed Income"]
-        matcher = FundMatcher([Fund(series_name, [])], lines)
+        matcher = FundMatcher([fund], lines)
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
@@ -411,9 +505,6 @@ def extract_series(preamble: str) -> list[Fund]:
         if line.startswith('<SERIES-NAME>'):
             # Allowed characters: [^A-Za-z0-9 '&%/.,:+*\$|()-]
             name = line[13:]
-            name = re.sub('&#[0-9]+;', ' ', name)
-            name = name.replace('&reg;', '(R)')
-            name = name.replace('&amp;', '&')
         if line.startswith('<CLASS-CONTRACT-TICKER-SYMBOL>'):
             ticker_symbols.append(line.split('>')[1].strip())
         if line.startswith('</SERIES>'):
@@ -443,6 +534,12 @@ def extract_series(preamble: str) -> list[Fund]:
     return series
 
 
+def process_range(series, lines, start, end, verbose):
+    matcher = FundMatcher(series, lines)
+    matcher.verbose = verbose
+    return matcher.process_lines(start, end)
+
+
 def process_filing(conn, cik, filename, verbose=False):
     if verbose:
         print(f"\n\n\n---------- {filename} ----------\n")
@@ -458,103 +555,44 @@ def process_filing(conn, cik, filename, verbose=False):
 
     # Extract series from preamble
     series = extract_series(preamble)
-    series_words = set()
-    for fund in series:
-        for word in fund.name.split():
-            series_words.add(word)
-    for word in ['FUND', 'PORTFOLIO', 'TRUST']:
-        if word in series_words:
-            series_words.remove(word)
 
     # Detect html filing and convert to text
     text_filing, fmt = ensure_text_filing(filename, filing)
 
     # Identify lines that are likely to contain fund names.
     lines = text_filing.split('\n')
-    start_line = 0
     num_lines = len(lines)
+
+    # Update filing with format, num_lines
+    conn.execute("UPDATE filings SET format = ?, num_lines = ? WHERE cik = ? AND filename = ?",
+                 (fmt, num_lines, cik, filename))
+    conn.execute("COMMIT")
 
     # Look in the 200 first lines for a line that looks like
     # ******************************* FORM N-Px REPORT *******************************
-    # and adjust the start_line to skip the header, which may contain fund names.
+    # and adjust the first_line to skip the header, which may contain fund names.
+    first_line = 0
     for i in range(min(200, len(lines))):
         if re.match(r'^\*+\s*FORM N-P[Xx] REPORT\s*\*+$', lines[i]):
-            start_line = i + 1
+            first_line = i + 1
             break
 
-    matcher = FundMatcher(series, lines)
-    matcher.verbose = verbose
+    # Split line ranges between CPUs
+    num_cpus = os.cpu_count()
+    print(f"Num CPUs: {num_cpus}")
+    actual_num_lines = num_lines - first_line
+    chunk_size = actual_num_lines // num_cpus
+    line_ranges = [(first_line + i * chunk_size, first_line + (i + 1) * chunk_size) for i in range(num_cpus)]
+    line_ranges[-1] = (line_ranges[-1][0], num_lines)
+    print(f"Lines ranges: {line_ranges} / {len(lines)}")
+
+    start_time = time.time()
     matches = []
-    if verbose:
-        print(f"I Range: {start_line}-{num_lines}")
-
-    # Keep track of the last match.
-    # If the next match is the same, skip it.
-    # After each new match (and at the end), update the last_line of the previous match.
-    last_fund = None
-    last_fund_id = None
-
-    def add_match(line_no: int, match: FundMatch | None):
-        nonlocal last_fund, last_fund_id
-
-        # Update last_fund.last_line if needed
-        if last_fund_id is not None:
-            conn.execute("UPDATE funds SET last_line = ? WHERE id = ?", (line_no - 1, last_fund_id))
-
-        if match is not None:
-            matches.append(match)
-            # Create new row in funds table
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO funds (cik, ordinal, series_name, ticker_symbol, method, first_line, fund_name, fund_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                cik,
-                len(matches),
-                match.fund.original_name,
-                ",".join(match.fund.ticker_symbols),
-                ";".join(match.method),
-                line_no,
-                match.fund.name,
-                match.text))
-            last_fund = match.fund
-            last_fund_id = cursor.lastrowid
-
-    i = start_line
-    while i < num_lines:
-
-        # We attempt to skip over most irrelevant items.
-        # Lines that begin with a number are probably votes and should be skipped.
-        # Subsequent indented lines can also safely be skipped.
-        m = re.match(r'\s*\|?\s*([A-Z](.\d)?|\d+|\d+[A-Za-z].?|CMMT)\b', lines[i])
-        if m is not None:
-            i += 1
-            ws = ' ' * len(m.group())
-            while i < num_lines and lines[i].startswith(ws):
-                i += 1
-            continue
-        # Skip lines that are empty or just a series of dashes, equal signs, or underscores
-        if re.match(r'[-=_]*\s*$', lines[i]):
-            i += 1
-            continue
-        # Skip common words that won't be part of fund names
-        m = re.search(
-            r'Ticker|Voted|Meeting|Annual|Issue No|Mgmt|Proposal|ISIN|Type|Record Date|no proxy voting|during the reporting|SECURITY ID:|Security:|Please|Agenda Number:',
-            lines[i])
-        if m is not None:
-            i += 1
-            continue
-        # If no word in the line is part of a fund name, skip it
-        words = set(re.findall(r'\b\w+\b', lines[i].upper()))
-        if not words.intersection(series_words):
-            i += 1
-            continue
-
-        match = matcher.find_at(i)
-        if match is not None and match.fund is not last_fund:
-            add_match(i, match)
-
-        i += 1
+    with Pool(num_cpus) as pool:
+        for ms in pool.starmap(process_range, [(series, lines, start, end, verbose) for (start, end) in line_ranges]):
+            matches.extend(ms)
+    time_elapsed = time.time() - start_time
+    print(f"Processed {num_lines} lines in {time_elapsed:.2f}s")
 
     if verbose and len(matches) > 100:
         print(f"W {filename}: too many funds found, {len(matches)} lines")
@@ -570,7 +608,7 @@ def process_filing(conn, cik, filename, verbose=False):
         if len(series) == 1:
             if verbose:
                 print("I No fund line found, defaulting to single series")
-            add_match(0, FundMatch(series[0], ["default"]))
+            matches.append(FundMatch(series[0], ["default"]))
         else:
             if verbose:
                 print(f"W {filename}: no funds found, {len(series)} series")
@@ -587,16 +625,45 @@ def process_filing(conn, cik, filename, verbose=False):
             print(f"W {filename}: fund not found: {fund.original_name} ({fund.name})")
     if verbose:
         for match in matches:
-            print(f"I [{match.start_line},{';'.join(match.method)}] found {match.fund} as {match.text}")
+            print(f"I [{match.first_line},{';'.join(match.method)}] found {match.fund} as {match.text}")
 
-    if matches:
-        # Update last_line of the last match
-        add_match(i, None)
+    # Sort matches by first_line
+    matches.sort(key=lambda x: x.first_line)
 
-    # Update filing with num_lines
-    conn.execute("UPDATE filings SET format = ?, num_lines = ? WHERE cik = ? AND filename = ?",
-                 (fmt, num_lines, cik, filename))
+    # Remove consecutive matches for the same fund
+    i = 0
+    while i < len(matches) - 1:
+        if matches[i].fund == matches[i + 1].fund:
+            print(f"W {filename}: consecutive matches for {matches[i].fund.name}")
+            m = matches[i]
+            m.last_line = matches[i + 1].last_line
+            matches[i + 1] = m
+            del matches[i]
+        else:
+            i += 1
 
+    # Remove previous matches and insert new ones
+    conn.execute("BEGIN")
+    conn.execute("DELETE FROM funds WHERE cik = ?", (cik,))
+    for i, match in enumerate(matches):
+        if i + 1 < len(matches):
+            match.last_line = matches[i + 1].first_line - 1
+        else:
+            match.last_line = num_lines - 1
+        # Create new row in funds table
+        conn.execute("""
+            INSERT INTO funds (cik, ordinal, series_name, ticker_symbol, method, first_line, last_line, fund_name, fund_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            cik,
+            i + 1,
+            match.fund.original_name,
+            ",".join(match.fund.ticker_symbols),
+            ";".join(match.method),
+            match.first_line,
+            match.last_line,
+            match.fund.name,
+            match.text))
     conn.execute("COMMIT")
 
 

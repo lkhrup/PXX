@@ -16,7 +16,7 @@
             font-size: 10px;
         }
 
-        tr.enabled .matched {
+        tr.keep .matched {
             color: darkred;
         }
 
@@ -24,7 +24,7 @@
             background: lightgray;
         }
 
-        tr.disabled td {
+        tr.skip td {
             color: gray;
         }
 
@@ -118,11 +118,26 @@
             font-weight: bold;
             background: darkgray;
         }
+
+        button.danger {
+            background: red;
+            font-weight: bold;
+            color: yellow;
+            border: none;
+            padding: 10px;
+            margin: 0 0 20px 0;
+            cursor: pointer;
+            box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.5);
+        }
     </style>
     <script>
         const context = { cik: "" };
         function refresh() {
             up.render({ url: window.location.href, target: 'main' });
+        }
+
+        function processFiling() {
+            up.render({ url: context.processURL, target: 'main' });
         }
 
         // Keyboard navigation
