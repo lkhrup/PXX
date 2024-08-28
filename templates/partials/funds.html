@@ -8,11 +8,14 @@
 <h1>Funds for Filing: {{ filing.display_name }}</h1>
 
 
-<div>
-<button class="danger" onclick="processFiling()">Re-process filing</button>
-{% if processed %}
- <strong>Processed!</strong>
-{% endif %}
+<div class="toolbox">
+    <button class="danger" onclick="processFiling()">Re-process filing</button>
+    <button onclick="toggleSelectedRange()">Toggle Selected Range</button>
+    <button onclick="keepSelectedRange()">Keep Selected Range</button>
+    <button onclick="skipSelectedRange()">Skip Selected Range</button>
+</div>
+<div class="messages">
+{% if processed %}<strong>Processed!</strong>{% endif %}
 </div>
 
 <!-- Navigation Links -->
@@ -23,10 +26,6 @@
     {% if next_filing %}
     <a id="nav-right" up-history="true" href="{{ url_for('filing_funds', cik=next_filing['cik']) }}">{{ next_filing.display_name }} &gt;&gt;</a>
     {% endif %}
-</div>
-
-<div class="toolbox">
-    <button onclick="toggleSelectedRange()">Toggle Selected Range</button>
 </div>
 
 <table border="1">
@@ -48,14 +47,15 @@
     <tr class="{% if fund.state == 'SKIP' %}skip{% else %}keep{% endif %}">
         <td>{{ fund.id }}</td>
         <td>{{ fund.ordinal }}</td>
-        <td class="pre"><div class="name">{{ fund.series_name }}</div
-            ><div class="matched">{{ fund.fund_text }}</div
-            ><div class="plain">{{ fund.matched_text }}</div
-            >{% if fund.aligned_name %}<div class="name aligned">{{ fund.aligned_name|safe }}</div
-            ><div class="matched aligned">{{ fund.aligned_matched|safe }}</div
+        <td class="pre"><div class="matched">{{ fund.fund_text }}</div
+            ><div class="name">{{ fund.series_name }}</div
+            ><div class="plain"></div
+            >{% if fund.aligned_name %}<div class="matched aligned">{{ fund.aligned_matched|safe }}</div
+            ><div class="name aligned">{{ fund.aligned_name|safe }}</div
             >{% endif %}</td>
         <td class="center">{{ fund.ticker_symbol }}</td>
-        <td class="center">{{ fund.first_line }}-{{ fund.last_line }}</td>
+        <td class="center">{{ fund.first_line }}-{{ fund.last_line }}<br>
+            {{ fund.last_line - fund.first_line }}</td>
         <td class="method">{{ fund.method }}</td>
         <td class="fill w50 toggleState">
             <a href="javascript:void(0);"

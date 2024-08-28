@@ -9,7 +9,6 @@
         }
 
         .name, .matched {
-            text-transform: uppercase;
         }
 
         .aligned {
@@ -89,16 +88,18 @@
         .nav a + a {
             text-align: right;
         }
+
         .w50 {
             width: 50px;
         }
 
         .toolbox {
-            position: fixed;
-            right: 10px;
-            padding: 10px;
-            background: lightblue;
-            box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .toolbox button {
+            border-radius: 5px;
+            margin: 10px;
+            min-height: 32px;
         }
 
         /* make input[type="checkbox"] look like a button */
@@ -131,13 +132,14 @@
         }
     </style>
     <script>
-        const context = { cik: "" };
+        const context = {cik: ""};
+
         function refresh() {
-            up.render({ url: window.location.href, target: 'main' });
+            up.render({url: window.location.href, target: 'main'});
         }
 
         function processFiling() {
-            up.render({ url: context.processURL, target: 'main' });
+            up.render({url: context.processURL, target: 'main'});
         }
 
         // Keyboard navigation
@@ -145,15 +147,25 @@
             if (event.code === "ArrowLeft") {
                 const navLeft = document.getElementById("nav-left");
                 if (navLeft) {
-                    up.render({ url: navLeft.href, target: 'main', history: true });
+                    up.render({url: navLeft.href, target: 'main', history: true});
                 }
             } else if (event.code === "ArrowRight") {
                 const navRight = document.getElementById("nav-right");
                 if (navRight) {
-                    up.render({ url: navRight.href, target: 'main', history: true });
+                    up.render({url: navRight.href, target: 'main', history: true});
                 }
             }
         });
+
+        function wrap(p, errorMessage) {
+            p.then(response => {
+                if (response.ok) {
+                    refresh();
+                } else {
+                    alert(errorMessage);
+                }
+            });
+        }
 
         function post(url, data) {
             return fetch(url, {
@@ -167,62 +179,65 @@
 
         // Toggle individual fund
         function toggleFundState(fundId, value) {
-            post('/toggle_fund_state', {
+            wrap(post('/toggle_fund_state', {
                 id: fundId,
                 value: value
-            }).then(response => {
-                if (response.ok) {
-                    refresh();
-                } else {
-                    alert("Failed to set fund state");
-                }
-            });
+            }), "Failed to toggle fund state");
         }
 
         function toggleFundFlagged(fundId, flagged) {
-            post('/toggle_fund_flagged', {
+            wrap(post('/toggle_fund_flagged', {
                 id: fundId,
                 value: flagged
-            }).then(response => {
-                if (response.ok) {
-                    refresh();
-                } else {
-                    alert("Failed to set fund flagged");
-                }
-            });
+            }, "Failed to set fund flagged"));
         }
 
-        function toggleSelectedRange() {
+        function getSelectedRange() {
             // Get all checkboxes
             const checkboxes = document.querySelectorAll('input[name="select_fund"]:checked');
-            if (checkboxes.length < 2) {
-                alert("Please select at least two rows to define a range.");
-                return;
+            if (checkboxes.length !== 2) {
+                alert("Please select exactly two rows to define a range.");
+                return null;
             }
-
             // Get the IDs of the first and last selected rows
             const firstId = parseInt(checkboxes[0].value, 10);
             const lastId = parseInt(checkboxes[checkboxes.length - 1].value, 10);
-
-            // Send a POST request to the server to toggle the range
-            fetch('/toggle_range', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    cik: context.cik,
-                    first_id: firstId,
-                    last_id: lastId
-                })
-            }).then(response => {
-                if (response.ok) {
-                    refresh();
-                } else {
-                    alert("Failed to toggle range");
-                }
-            });
+            return {firstId, lastId};
         }
+
+        function toggleSelectedRange() {
+            const range = getSelectedRange();
+            if (range) {
+                wrap(post('/toggle_range', {
+                    cik: context.cik,
+                    first_id: range.firstId,
+                    last_id: range.lastId
+                }, "Failed to toggle range"));
+            }
+        }
+
+        function skipSelectedRange() {
+            const range = getSelectedRange();
+            if (range) {
+                wrap(post('/skip_range', {
+                    cik: context.cik,
+                    first_id: range.firstId,
+                    last_id: range.lastId
+                }, "Failed to skip range"));
+            }
+        }
+
+        function keepSelectedRange() {
+            const range = getSelectedRange();
+            if (range) {
+                wrap(post('/keep_range', {
+                    cik: context.cik,
+                    first_id: range.firstId,
+                    last_id: range.lastId
+                }, "Failed to keep range"));
+            }
+        }
+
     </script>
 </head>
 <body>

@@ -95,7 +95,20 @@ def process_filing(cik):
 @app.route('/filings')
 def filings_list():
     conn = get_db_connection()
-    filings = conn.execute('SELECT cik, display_name FROM filings ORDER BY cik').fetchall()
+    # Get filings (CIK, display name) and count SKIP, KEEP, and flagged funds
+    filings = conn.execute("""
+        SELECT filings.cik, display_name, skip_count, keep_count, flagged_count
+          FROM filings, (
+            SELECT cik,
+                   COUNT(CASE WHEN state = 'SKIP' THEN 1 END) AS skip_count,
+                   COUNT(CASE WHEN state = 'KEEP' THEN 1 END) AS keep_count,
+                   COUNT(CASE WHEN flagged THEN 1 END) AS flagged_count
+              FROM funds
+              GROUP BY cik
+          ) AS fund_counts
+          WHERE filings.cik = fund_counts.cik
+          ORDER BY filings.cik
+        """).fetchall()
     conn.close()
     return render_template('filings.html', filings=filings)
 
@@ -163,6 +176,54 @@ def toggle_range():
     conn.close()
 
     return '', 204  # No Content response
+
+@app.route('/skip_range', methods=['POST'])
+def skip_range():
+    data = request.get_json()
+    cik = data['cik']
+    first_id = data['first_id']
+    last_id = data['last_id']
+
+    conn = get_db_connection()
+
+    # Identify the affected line range
+    first = conn.execute('SELECT first_line AS line FROM funds WHERE id = ? AND cik = ?', (first_id, cik)).fetchone()
+    last = conn.execute('SELECT last_line AS line FROM funds WHERE id = ? AND cik = ?', (last_id, cik)).fetchone()
+
+    # Update all funds in the specified range
+    conn.execute("""
+        UPDATE funds
+        SET state = 'SKIP'
+        WHERE cik = ? AND first_line BETWEEN ? AND ?""",
+                 (cik, first['line'], last['line']))
+    conn.commit()
+    conn.close()
+
+    return '', 204
+
+@app.route('/keep_range', methods=['POST'])
+def keep_range():
+    data = request.get_json()
+    cik = data['cik']
+    first_id = data['first_id']
+    last_id = data['last_id']
+
+    conn = get_db_connection()
+
+    # Identify the affected line range
+    first = conn.execute('SELECT first_line AS line FROM funds WHERE id = ? AND cik = ?', (first_id, cik)).fetchone()
+    last = conn.execute('SELECT last_line AS line FROM funds WHERE id = ? AND cik = ?', (last_id, cik)).fetchone()
+
+    # Update all funds in the specified range
+    conn.execute("""
+        UPDATE funds
+        SET state = 'KEEP'
+        WHERE cik = ? AND first_line BETWEEN ? AND ?""",
+                 (cik, first['line'], last['line']))
+    conn.commit()
+    conn.close()
+
+    return '', 204
 
 
 if __name__ == '__main__':

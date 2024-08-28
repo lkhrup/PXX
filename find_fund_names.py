@@ -13,6 +13,7 @@ year = 2018
 
 SECURITY_REGEXP = r'\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LIMITED|LTD|LLC|PLC)\.?$'
 
+
 class Fund:
 
     def __init__(self, original_name, ticker_symbols):
@@ -62,7 +63,8 @@ def normalize_fund(fund: str) -> str:
     fund = re.sub(r'&amp;', '&', fund, flags=re.IGNORECASE)
     fund = re.sub(r'\bAND\b', ' & ', fund, flags=re.IGNORECASE)
     # Get rid of (R) and (TM) and (SM)
-    fund = re.sub(r'&reg;|\(R\)|\[R]|<SUP>R</SUP>|\(TM\)|<SUP>TM</SUP>|\(SM\)|<SUP>SM</SUP>', '', fund, flags=re.IGNORECASE)
+    fund = re.sub(r'&reg;|\(R\)|\[R]|<SUP>R</SUP>|\(TM\)|<SUP>TM</SUP>|\(SM\)|<SUP>SM</SUP>', '', fund,
+                  flags=re.IGNORECASE)
     # '%', '.', '+', '-' can be left alone
     # Normalize U.S. to US
     fund = re.sub(r'\bU\.S\.\b', 'US', fund)
@@ -608,7 +610,9 @@ def process_filing(conn, cik, filename, verbose=False):
         if len(series) == 1:
             if verbose:
                 print("I No fund line found, defaulting to single series")
-            matches.append(FundMatch(series[0], ["default"]))
+            m = FundMatch(series[0], ["default"])
+            m.first_line = first_line
+            matches.append(m)
         else:
             if verbose:
                 print(f"W {filename}: no funds found, {len(series)} series")
@@ -642,6 +646,34 @@ def process_filing(conn, cik, filename, verbose=False):
         else:
             i += 1
 
+    # Map tweaks to matches
+    tweak_matches = {}
+    for match in matches:
+        for tweak in match.method:
+            if tweak not in tweak_matches:
+                tweak_matches[tweak] = []
+            tweak_matches[tweak].append(match)
+    # Sort by number of matches for each tweak.
+    sorted_tweaks = list(sorted(tweak_matches.items(), key=lambda x: len(x[1]), reverse=True))
+    if verbose:
+        for tweak, tweak_matches in sorted_tweaks:
+            print(f"I tweak {tweak}: {len(tweak_matches)} matches")
+    mostly_exact = False
+    levenshtein_threshold = 7
+    require_tweaks = []
+    if sorted_tweaks:
+        for tweak in sorted_tweaks:
+            is_majority = len(tweak[1]) > len(matches) / 2
+            if tweak[0] == 'exact':
+                mostly_exact = True
+                continue
+            if tweak[0] in ['title', 'row', 'leading(fund name)'] and is_majority:
+                require_tweaks.append(tweak[0])
+            m = re.match('levenshtein\((\d+)\)', tweak[0])
+            if m and is_majority:
+                levenshtein_threshold = max(levenshtein_threshold, int(m.group(1)) + 5)
+                print(f"Raise levenshtein threshold to {levenshtein_threshold}")
+
     # Remove previous matches and insert new ones
     conn.execute("BEGIN")
     conn.execute("DELETE FROM funds WHERE cik = ?", (cik,))
@@ -650,10 +682,28 @@ def process_filing(conn, cik, filename, verbose=False):
             match.last_line = matches[i + 1].first_line - 1
         else:
             match.last_line = num_lines - 1
+        span = match.last_line - match.first_line
+        state = "KEEP"
+        flagged = False
+        if mostly_exact:
+            for tweak in match.method:
+                m = re.match('levenshtein\((\d+)\)', tweak)
+                if m is not None and int(m.group(1)) > levenshtein_threshold:
+                    state = "SKIP"
+                    if span >= min(1000., actual_num_lines / 10):
+                        flagged = True
+                    break
+        if require_tweaks:
+            for tweak in require_tweaks:
+                if tweak not in match.method:
+                    state = "SKIP"
+                    if span >= actual_num_lines / 10:
+                        flagged = True
+                    break
         # Create new row in funds table
         conn.execute("""
-            INSERT INTO funds (cik, ordinal, series_name, ticker_symbol, method, first_line, last_line, fund_name, fund_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO funds (cik, ordinal, series_name, ticker_symbol, method, first_line, last_line, fund_name, fund_text, state, flagged)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             cik,
             i + 1,
@@ -663,7 +713,9 @@ def process_filing(conn, cik, filename, verbose=False):
             match.first_line,
             match.last_line,
             match.fund.name,
-            match.text))
+            match.text,
+            state,
+            flagged))
     conn.execute("COMMIT")
 
 

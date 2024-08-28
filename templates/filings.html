@@ -12,11 +12,17 @@
     <tbody>
     <tr>
         <td>CIK</td>
+        <td>✔</td>
+        <td>✖</td>
+        <td>🚩</td>
         <td>Name</td>
     </tr>
     {% for filing in filings %}
     <tr>
         <td><a href="{{ url_for('filing_funds', cik=filing.cik) }}">{{ filing.cik }}</a></td>
+        <td>{{filing.keep_count}}</td>
+        <td>{{filing.skip_count}}</td>
+        <td>{{filing.flagged_count}}</td>
         <td><a href="{{ url_for('filing_funds', cik=filing.cik) }}">{{ filing.display_name }}</a></td>
     </tr>
     {% endfor %}
