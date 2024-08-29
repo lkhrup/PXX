@@ -410,6 +410,11 @@ class FundMatcher:
 
             length, pos1, pos2 = longest_common_substring(alphanum, fund.alphanum)
 
+            # Skip common words that do not help identify the fund
+            common = alphanum[pos1:pos1 + length]
+            if common in ["FUND", "PORTFOLIO", "TRUST", "EQUITY"]:
+                continue
+
             # heads and tails penalize the score
             penalty = pos1 + pos2 + len(alphanum) - (pos1 + length) + len(fund.alphanum) - (pos2 + length)
             score = max(1, length - penalty / 4)
@@ -540,6 +545,15 @@ class TestFundMatcher(unittest.TestCase):
         matcher.verbose = True
         match = matcher.find_at(0)
         self.assertIsNotNone(match)
+
+    def test_0000934563(self):
+        fund = Fund("The ESG Growth Portfolio")
+        lines = ["Portfolio"]
+        matcher = FundMatcher([fund], lines)
+        matcher.verbose = True
+        match = matcher.find_at(0)
+        print(match)
+        self.assertIsNone(match)
 
 
 def extract_series(preamble: str) -> list[Fund]:
