@@ -1,6 +1,6 @@
 import os
-
 import sqlite3
+
 import requests
 
 year = 2018
@@ -126,5 +126,13 @@ while True:
     if cursor >= total_hits:
         break
     page += 1
+
+# Remove all but the last filing for each CIK
+conn.execute("""
+DELETE FROM filings WHERE url NOT IN (
+    SELECT MAX(url) FROM filings GROUP BY cik
+);
+""")
+
 conn.commit()
 session.close()

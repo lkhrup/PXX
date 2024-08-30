@@ -7,24 +7,26 @@ year = 2018
 conn = sqlite3.connect(os.environ.get('SQLITE_PATH', f'{year}.sqlite'))
 conn.row_factory = sqlite3.Row
 
-print("Doc #,Date filed,,Filing entity/person,Fund,Ticker symbols,Vote,URL")
+print("CIK,Filing entity,Doc,Date filed,Series name,Ticker symbols,Vote")
 # Export each filing in CSV format
 for row in conn.execute("""
-    SELECT * FROM votes v, filings f
-    WHERE v.url = f.url ORDER BY num, file_date, fund_name, vote;
+    SELECT filings.cik, filings.display_name, filings.num, filings.file_date,
+           funds.series_name, coalesce(funds.ticker_symbol, '') AS ticker_symbol,
+           votes.vote
+      FROM votes
+     LEFT OUTER JOIN filings ON
+        filings.url = votes.filing_url
+     LEFT OUTER JOIN funds ON
+        funds.filing_url = votes.filing_url AND
+        votes.block_start BETWEEN funds.first_line AND funds.last_line 
+     WHERE vote <> 'None'
+    ORDER BY num, block_start;
 """):
-    num = row['num']
     cik = row['cik']
     display_name = row['display_name']
+    num = row['num']
     file_date = row['file_date']
-    fund = row['fund_name']
-    vote = row['vote'].title()
-    if vote != "For" and vote != "Against":
-        continue
-    block_start = row['block_start']
-    url = row['url']
+    series_name = row['series_name']
     ticker_symbol = row['ticker_symbol']
-    if ticker_symbol is None:
-        ticker_symbol = ""
-    notes = row['note'].replace('"', '""') if row['note'] is not None else ""
-    print(f'{num},{file_date},"{display_name}",{fund},"{ticker_symbol}",{vote},"{url}","{notes}",{block_start}')
+    vote = row['vote']
+    print(f'"{cik}","{display_name}",{num},{file_date},"{series_name}","{ticker_symbol}","{vote}"')
