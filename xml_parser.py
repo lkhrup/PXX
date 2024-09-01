@@ -5,6 +5,29 @@ from xml.etree import ElementTree
 import traceback
 
 
+class Series:
+
+    def __init__(self, id_, name, ticker_symbols=None):
+        self.id = id_
+        self.name = name
+        if ticker_symbols is None:
+            self.ticker_symbols = []
+        else:
+            self.ticker_symbols = sorted(ticker_symbols)
+
+    def to_dict(self):
+        return {
+            'name': self.name,
+            'ticker_symbols': self.ticker_symbols,
+        }
+
+    def __str__(self):
+        return self.name
+
+    def __eq__(self, other):
+        return self.name == other.original_name
+
+
 def match_security(text: str) -> bool:
     # Case-insensitive, ignore non-alphanum
     text = text.upper()
@@ -38,7 +61,7 @@ def extract_number(element: ElementTree.Element) -> float | None:
     return float(text.replace(',', ''))
 
 
-def parse_proxy_vote_table(filename: str, root: ElementTree.Element):
+def parse_proxy_vote_table(filename: str, root: ElementTree.Element, series_by_id: dict[str, Series]):
     # XML namespace
     ns = {'inf': 'http://www.sec.gov/edgar/document/npxproxy/informationtable'}
 
@@ -98,7 +121,16 @@ def parse_proxy_vote_table(filename: str, root: ElementTree.Element):
 
         # Vote series is a key corresponding to the fund.
         # TODO: look up in the filing's edgarSubmission section.
+        fund_name = None
+        ticker_symbols = None
         vote_series = proxy_table.find('inf:voteSeries', ns)
+        if vote_series is not None:
+            fund = series_by_id.get(vote_series.text)
+            if fund is None:
+                fund_name = vote_series.text
+            else:
+                fund_name = fund.name
+                ticker_symbols = " ".join(fund.ticker_symbols)
 
         # Ensure all elements are found before printing
         if vote_series is None or meeting_date is None or vote_description is None:
@@ -106,7 +138,36 @@ def parse_proxy_vote_table(filename: str, root: ElementTree.Element):
             continue
 
         # TODO: proper CSV formatting
-        print(f'{filename};{vote_series.text};{meeting_date.text};{shares_voted};{final_vote};"{all_text}"')
+        print(f'{filename};"{fund_name}";"{ticker_symbols}";{meeting_date.text};{shares_voted};{final_vote};"{all_text}"')
+
+
+def extract_series(header: str) -> list[Series]:
+    series = []
+    preamble_lines = header.split('\n')
+    in_series_block = False
+    series_id = None
+    series_name = None
+    ticker_symbols = []
+    for line in preamble_lines:
+        if in_series_block:
+            if line.startswith('<SERIES-ID>'):
+                series_id = line[11:]
+            elif line.startswith('<SERIES-NAME>'):
+                # Allowed characters: [^A-Za-z0-9 '&%/.,:+*\$|()-]
+                series_name = line[13:]
+            elif line.startswith('<CLASS-CONTRACT-TICKER-SYMBOL>'):
+                ticker_symbols.append(line.split('>')[1].strip())
+            elif line.startswith('</SERIES>'):
+                in_series_block = False
+                fund = Series(series_id, series_name, ticker_symbols)
+                series_id = None
+                series_name = None
+                ticker_symbols = []
+                series.append(fund)
+        elif line.startswith('<SERIES>'):
+            in_series_block = True
+
+    return series
 
 
 def process_filing(filename: str, file_path: str):
@@ -119,12 +180,25 @@ def process_filing(filename: str, file_path: str):
     lines = content.split('\n')
     xml_ranges = []
     xml_start = None
+    sec_header_end = None
     for i, line in enumerate(lines):
         if xml_start is None and line == '<XML>':
             xml_start = i
         elif xml_start is not None and line == '</XML>':
             xml_ranges.append((xml_start, i))
             xml_start = None
+        elif line == '</SEC-HEADER>':
+            sec_header_end = i
+
+    if sec_header_end is None:
+        raise ValueError("SEC-HEADER not found")
+
+    # Extract the header
+    header = "\n".join(lines[:sec_header_end])
+    series = extract_series(header)
+
+    # Index series by id
+    series_by_id = {fund.id: fund for fund in series}
 
     # Parse the XML sections
     for start, end in xml_ranges:
@@ -142,12 +216,12 @@ def process_filing(filename: str, file_path: str):
             # TODO: parse_edgar_submission(root) to extract metadata
             continue
         elif root.tag == '{http://www.sec.gov/edgar/document/npxproxy/informationtable}proxyVoteTable':
-            parse_proxy_vote_table(filename, root)
+            parse_proxy_vote_table(filename, root, series_by_id)
         else:
             print(f"warning: unknown element {root.tag}")
 
 
-if __name__ == '__main__':
+def main():
     for filename in os.listdir('filings'):
         if filename.endswith('.txt'):
             try:
@@ -155,3 +229,9 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"Error processing {filename}: {e}")
                 traceback.print_exception(None, e, e.__traceback__)
+
+
+if __name__ == '__main__':
+    main()
+
+
